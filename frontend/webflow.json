@@ -1,0 +1,9 @@
+{
+  "name": "Bulk Image Cleaner",
+  "publicDir": "public",
+  "size": "comfortable",
+  "apiVersion": "2",
+  "extension": {
+    "url": "https://6992c3beb555b4429b08b7e4.webflow-ext.com"
+  }
+}

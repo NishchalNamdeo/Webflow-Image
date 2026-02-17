@@ -1,0 +1,36 @@
+<div id="root" class="svg-styler-root"></div>
+
+<link href="./output.css" rel="stylesheet" />
+<script src="./config.js"></script>
+
+<style>
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    overflow: hidden;
+  }
+
+  .itemsPanel {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    height: 86vh;
+    min-height: 0;
+  }
+
+  .itemsScroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+  }
+</style>
+
+<script src="./bundle.js"></script>
