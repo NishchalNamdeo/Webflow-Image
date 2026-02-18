@@ -1,5 +1,3 @@
-
-
 declare const __API_BASE__: string | undefined;
 
 export class ApiError extends Error {
@@ -47,15 +45,38 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(res.status, msg || res.statusText);
   }
 
+  if (res.status === 204) return {} as T;
   return (await res.json().catch(() => ({}))) as T;
 }
 
+export type AuthStatus = {
+  authenticated: boolean;
+  authorizedSitesCount?: number;
+  siteIds?: string[];
+};
+
+export type SiteInfoSummary = {
+  id: string;
+  displayName?: string;
+  shortName?: string;
+};
+
+export type SiteListResponse = { sites: SiteInfoSummary[] };
+
 export const api = {
-  authStatus: async (): Promise<{ authenticated: boolean } | null> => {
+  authStatus: async (): Promise<AuthStatus | null> => {
     try {
-      return await request<{ authenticated: boolean }>("/api/auth/status");
+      return await request<AuthStatus>("/api/auth/status");
     } catch {
       return null;
     }
+  },
+
+  sites: async (): Promise<SiteListResponse> => {
+    return await request<SiteListResponse>("/api/sites");
+  },
+
+  logout: async (): Promise<void> => {
+    await request("/api/logout", { method: "POST" });
   },
 };

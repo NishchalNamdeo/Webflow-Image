@@ -1,4 +1,5 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, getApiBase, SiteInfoSummary } from "./api";
 
 declare const webflow: any;
 
@@ -33,6 +34,27 @@ type ConfirmState = {
   danger?: boolean;
   onConfirm?: () => void | Promise<void>;
 };
+
+type DesignerSiteInfo = {
+  siteId?: string;
+  siteName?: string;
+  shortName?: string;
+  workspaceId?: string;
+  workspaceSlug?: string;
+};
+
+type AuthGateStatus = "loading" | "api_missing" | "needs_auth" | "needs_site" | "ok";
+
+type AuthGateState = {
+  status: AuthGateStatus;
+  siteId?: string;
+  siteName?: string;
+  workspaceId?: string;
+  workspaceSlug?: string;
+  authorizedSites?: SiteInfoSummary[];
+  message?: string;
+};
+
 
 const ConfirmModal: React.FC<{
   state: ConfirmState;
@@ -148,6 +170,128 @@ export default function App() {
 
   const [scanResult, setScanResult] = useState<ScanResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const [authGate, setAuthGate] = useState<AuthGateState>({ status: "loading" });
+
+  const refreshAuth = useCallback(async () => {
+    const apiBase = getApiBase();
+
+    let info: DesignerSiteInfo | null = null;
+    try {
+      info = (await webflow.getSiteInfo?.()) || null;
+    } catch {
+      info = null;
+    }
+
+    const siteId = String((info as any)?.siteId || "").trim();
+    const siteName = String(
+      (info as any)?.siteName || (info as any)?.shortName || ""
+    ).trim();
+    const workspaceId = String((info as any)?.workspaceId || "").trim();
+    const workspaceSlug = String((info as any)?.workspaceSlug || "").trim();
+
+    if (!apiBase) {
+      setAuthGate({
+        status: "api_missing",
+        siteId,
+        siteName,
+        workspaceId,
+        workspaceSlug,
+        message: "API_BASE is not configured for this extension build.",
+      });
+      return;
+    }
+
+    const auth = await api.authStatus();
+    if (!auth || !auth.authenticated) {
+      setAuthGate({
+        status: "needs_auth",
+        siteId,
+        siteName,
+        workspaceId,
+        workspaceSlug,
+        message: "Authorize this app from your Webflow Workspace to continue.",
+      });
+      return;
+    }
+
+    try {
+      const { sites } = await api.sites();
+      const authorizedSites = Array.isArray(sites) ? sites : [];
+
+      const siteAuthorized =
+        !!siteId && authorizedSites.some((s) => String(s.id) === siteId);
+
+      if (!siteAuthorized) {
+        setAuthGate({
+          status: "needs_site",
+          siteId,
+          siteName,
+          workspaceId,
+          workspaceSlug,
+          authorizedSites,
+          message:
+            "This site is not authorized yet. Authorize access to this site and then refresh here.",
+        });
+        return;
+      }
+
+      setAuthGate({
+        status: "ok",
+        siteId,
+        siteName,
+        workspaceId,
+        workspaceSlug,
+        authorizedSites,
+      });
+    } catch {
+      setAuthGate({
+        status: "needs_auth",
+        siteId,
+        siteName,
+        workspaceId,
+        workspaceSlug,
+        message:
+          "Could not verify authorization with the backend. Authorize again and refresh.",
+      });
+    }
+  }, []);
+
+  const openAuthorize = useCallback(() => {
+    const base = getApiBase();
+    if (!base) return;
+
+    const u = new URL(`${base}/auth`);
+    u.searchParams.set("redirectTo", window.location.href);
+    if (authGate.workspaceId) u.searchParams.set("workspace", authGate.workspaceId);
+
+    const url = u.toString();
+
+    try {
+      if (typeof webflow?.openUrlInNewTab === "function") {
+        webflow.openUrlInNewTab(url);
+      } else {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
+    } catch {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  }, [authGate.workspaceId]);
+
+  const logout = useCallback(async () => {
+    try {
+      await api.logout();
+    } catch {
+      // ignore
+    } finally {
+      await refreshAuth();
+    }
+  }, [refreshAuth]);
+
+  useEffect(() => {
+    refreshAuth();
+  }, [refreshAuth]);
+
 
   const [scanProgress, setScanProgress] = useState(0);
   const [scanStep, setScanStep] = useState<string>("");
@@ -471,15 +615,41 @@ export default function App() {
     });
   }, []);
 
-  const selectAllUnused = useCallback(() => {
+
+  const allUnusedIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const img of (scanResult?.images || [])) {
+    for (const img of scanResult?.images || []) {
       if (img.isUnused) ids.add(img.id);
     }
-    setSelectedIds(ids);
+    return ids;
   }, [scanResult]);
 
-  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+  const allUnusedSelected = useMemo(() => {
+    if (allUnusedIds.size === 0) return false;
+    for (const id of allUnusedIds) {
+      if (!selectedIds.has(id)) return false;
+    }
+    return true;
+  }, [allUnusedIds, selectedIds]);
+
+  const toggleSelectAllUnused = useCallback(() => {
+    setSelectedIds((prev) => {
+      if (allUnusedIds.size === 0) return new Set(prev);
+
+      // Are ALL unused ids currently selected?
+      let isAll = true;
+      for (const id of allUnusedIds) {
+        if (!prev.has(id)) {
+          isAll = false;
+          break;
+        }
+      }
+
+      return isAll ? new Set() : new Set(allUnusedIds);
+    });
+  }, [allUnusedIds]);
+
+
 
   const performDelete = useCallback(async () => {
     if (!scanResult) return;
@@ -488,6 +658,10 @@ export default function App() {
 
     setDeleting(true);
     setDeleteProgress({ done: 0, total: ids.length });
+    setError(null);
+
+    const deleted = new Set<string>();
+    const failed: string[] = [];
 
     try {
       const assets = await webflow.getAllAssets?.();
@@ -497,29 +671,66 @@ export default function App() {
       let done = 0;
       for (const id of ids) {
         const asset = byId.get(id);
-        if (asset) {
+
+        let ok = false;
+
+        // If the asset is already missing from the Asset panel, treat as deleted.
+        if (!asset) {
+          ok = true;
+        } else {
           try {
             if (typeof asset.remove === "function") {
               await asset.remove();
+              ok = true;
             } else if (typeof webflow.removeAsset === "function") {
               await webflow.removeAsset(asset);
+              ok = true;
             }
           } catch {
-            // ignore
+            ok = false;
           }
         }
+
+        if (ok) deleted.add(id);
+        else failed.push(id);
+
         done++;
         setDeleteProgress({ done, total: ids.length });
       }
 
-      setDeleteProgress({ done: ids.length, total: ids.length });
-      await runScan();
+      // IMPORTANT: Do NOT rescan automatically. Just remove the deleted assets from the current list.
+      setScanResult((prev) => {
+        if (!prev) return prev;
+        const nextImages = prev.images.filter((img) => !deleted.has(img.id));
+        return {
+          images: nextImages,
+          meta: {
+            ...prev.meta,
+            scannedAssets: Math.max(0, (prev.meta?.scannedAssets || 0) - deleted.size),
+          },
+        };
+      });
+
+      setSelectedIds(new Set());
+
+      const remainingUnused = (scanResult.images || []).filter(
+        (img) => img.isUnused && !deleted.has(img.id)
+      ).length;
+
+      setScreen(remainingUnused === 0 ? "success" : "results");
+
+      if (failed.length > 0) {
+        setError(
+          `Could not delete ${failed.length} image${failed.length > 1 ? "s" : ""}. They are still listed.`
+        );
+      }
     } finally {
       setDeleting(false);
       setDeleteProgress(null);
-      setSelectedIds(new Set());
     }
-  }, [runScan, scanResult, selectedIds]);
+  }, [scanResult, selectedIds]);
+
+
 
   const requestDelete = useCallback(() => {
     if (selectedIds.size === 0) return;
@@ -571,6 +782,80 @@ export default function App() {
       {children}
     </button>
   );
+
+
+  // -----------------------------
+  // Authorization gate
+  // -----------------------------
+  if (authGate.status !== "ok") {
+    const canAuthorize = authGate.status === "needs_auth" || authGate.status === "needs_site";
+
+    return (
+      <div className="min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden">
+        <div className="p-4">
+          <div>
+            <h1 className="text-xl font-bold tracking-tight">Bulk Image Cleaner</h1>
+            <p className="mt-1 text-xs text-neutral-400">
+              {authGate.siteName ? `Site: ${authGate.siteName}` : "Open this extension inside Webflow Designer"}
+            </p>
+          </div>
+
+          {authGate.message && (
+            <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs text-neutral-200 whitespace-pre-line">
+              {authGate.message}
+            </div>
+          )}
+
+          {authGate.status === "loading" ? (
+            <div className="mt-4 text-xs text-neutral-400">Checking authorization…</div>
+          ) : (
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              {canAuthorize && (
+                <PrimaryButton onClick={openAuthorize} disabled={false}>
+                  Authorize
+                </PrimaryButton>
+              )}
+
+              <GhostButton onClick={refreshAuth} disabled={false}>
+                Refresh
+              </GhostButton>
+
+              {authGate.status !== "api_missing" && (
+                <GhostButton onClick={logout} disabled={false}>
+                  Logout
+                </GhostButton>
+              )}
+            </div>
+          )}
+
+          {authGate.authorizedSites && authGate.authorizedSites.length > 0 && (
+            <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4">
+              <div className="text-xs font-semibold text-neutral-100">Authorized sites</div>
+              <div className="mt-2 space-y-1 text-[11px] text-neutral-400">
+                {authGate.authorizedSites.slice(0, 8).map((s) => (
+                  <div key={s.id} className="flex items-center justify-between gap-2">
+                    <span className="truncate">{s.displayName || s.shortName || s.id}</span>
+                    <span className="text-neutral-500">{s.id}</span>
+                  </div>
+                ))}
+                {authGate.authorizedSites.length > 8 && (
+                  <div className="text-neutral-500">
+                    +{authGate.authorizedSites.length - 8} more
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {authGate.status === "api_missing" && (
+            <div className="mt-4 text-[11px] text-neutral-500">
+              Tip: Set API_BASE in frontend/.env (or as window.__API_BASE__) to your backend URL.
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (screen === "intro") {
     return (
@@ -749,11 +1034,8 @@ export default function App() {
         </div>
 
         <div className="mt-3 flex items-center gap-2">
-          <GhostButton onClick={selectAllUnused} disabled={deleting}>
-            Select All
-          </GhostButton>
-          <GhostButton onClick={clearSelection} disabled={deleting}>
-            Clear
+          <GhostButton onClick={toggleSelectAllUnused} disabled={deleting || unusedImages.length === 0}>
+            {allUnusedSelected ? "Unselect All" : "Select All"}
           </GhostButton>
 
           <div className="flex-1" />
