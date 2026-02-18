@@ -190,13 +190,23 @@ function sanitizeRedirect(u?: string | null): string | undefined {
 // Auth helpers
 // -----------------------------
 function hasAnyAuthorization(req: Request): boolean {
-  const anyToken = Boolean(req.session?.accessToken);
+  // For this app we consider the user "authorized" only when at least one site has been granted.
+  // (OAuth tokens can exist without an introspected site list if the introspect call fails.)
   const sites = (req.session as any)?.authorizedSites;
-  const hasSites = sites && typeof sites === "object" && Object.keys(sites).length > 0;
-  return anyToken || Boolean(hasSites);
+  if (!sites || typeof sites !== "object") return false;
+
+  const ids = Object.keys(sites);
+  if (ids.length === 0) return false;
+
+  // Require that at least one site entry has a token attached.
+  for (const id of ids) {
+    const entry = (sites as any)[id];
+    if (entry && typeof entry === "object" && String(entry.accessToken || "").trim()) return true;
+  }
+  return false;
 }
 
-function requireAuth(req: Request, res: Response, next: NextFunction) {
+function requireAuth(req: Request, res: Response, next: NextFunction) {(req: Request, res: Response, next: NextFunction) {
   if (!hasAnyAuthorization(req)) {
     return res.status(401).json({ message: "Not authenticated" });
   }
@@ -341,7 +351,12 @@ app.get(
 // Minimal API (optional)
 // -----------------------------
 app.get("/api/auth/status", (req: Request, res: Response) => {
-  res.json({ authenticated: hasAnyAuthorization(req) });
+  const map = ensureAuthorizedSites(req);
+  res.json({
+    authenticated: hasAnyAuthorization(req),
+    authorizedSitesCount: Object.keys(map).length,
+    siteIds: Object.keys(map),
+  });
 });
 
 app.get(
