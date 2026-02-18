@@ -206,7 +206,7 @@ function hasAnyAuthorization(req: Request): boolean {
   return false;
 }
 
-function requireAuth(req: Request, res: Response, next: NextFunction) {(req: Request, res: Response, next: NextFunction) {
+function requireAuth(req: Request, res: Response, next: NextFunction)  {
   if (!hasAnyAuthorization(req)) {
     return res.status(401).json({ message: "Not authenticated" });
   }
