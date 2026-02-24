@@ -35260,7 +35260,7 @@ function App() {
         });
     }, [allUnusedIds]);
     const performDelete = (0,react__WEBPACK_IMPORTED_MODULE_1__.useCallback)(async () => {
-        var _a;
+        var _a, _b;
         if (!scanResult)
             return;
         const ids = Array.from(selectedIds);
@@ -35269,35 +35269,66 @@ function App() {
         setDeleting(true);
         setDeleteProgress({ done: 0, total: ids.length });
         setError(null);
+        const siteId = String(authGate.siteId || "").trim();
         const deleted = new Set();
         const failed = [];
+        let authFailed = false;
+        let scopeFailed = false;
+        const tryRemoveFromDesigner = async (assetMaybe, assetId) => {
+            let asset = assetMaybe;
+            if (!asset && typeof webflow.getAssetById === "function") {
+                try {
+                    asset = await webflow.getAssetById(assetId);
+                }
+                catch (_a) {
+                    asset = null;
+                }
+            }
+            if (!asset)
+                return true;
+            try {
+                if (typeof asset.remove === "function") {
+                    await asset.remove();
+                    return true;
+                }
+            }
+            catch (_b) { }
+            try {
+                if (typeof webflow.removeAsset === "function") {
+                    await webflow.removeAsset(asset);
+                    return true;
+                }
+            }
+            catch (_c) { }
+            return false;
+        };
         try {
-            const assets = await ((_a = webflow.getAllAssets) === null || _a === void 0 ? void 0 : _a.call(webflow));
+            const assets = await ((_a = webflow.getAllAssets) === null || _a === void 0 ? void 0 : _a.call(webflow).catch(() => []));
             const list = Array.isArray(assets) ? assets : [];
             const byId = new Map(list.map((a) => [String(a.id), a]));
             let done = 0;
             for (const id of ids) {
-                const asset = byId.get(id);
+                const assetObj = byId.get(id);
                 let ok = false;
-                // If the asset is already missing from the Asset panel, treat as deleted.
-                if (!asset) {
-                    ok = true;
-                }
-                else {
+                // 1) Primary: backend OAuth delete (removes from Webflow Assets too)
+                if (siteId) {
                     try {
-                        if (typeof asset.remove === "function") {
-                            await asset.remove();
-                            ok = true;
-                        }
-                        else if (typeof webflow.removeAsset === "function") {
-                            await webflow.removeAsset(asset);
-                            ok = true;
-                        }
+                        await _api__WEBPACK_IMPORTED_MODULE_2__.api.deleteAsset(siteId, id);
+                        ok = true;
                     }
-                    catch (_b) {
+                    catch (e) {
+                        const status = Number((e === null || e === void 0 ? void 0 : e.status) || 0);
+                        const msg = String((e === null || e === void 0 ? void 0 : e.message) || "").toLowerCase();
+                        if (status === 401)
+                            authFailed = true;
+                        if (status === 403 || msg.includes("scope") || msg.includes("assets:write"))
+                            scopeFailed = true;
                         ok = false;
                     }
                 }
+                // 2) Best-effort: instantly update Assets panel UI in Designer
+                const designerOk = await tryRemoveFromDesigner(assetObj, id);
+                ok = ok || designerOk;
                 if (ok)
                     deleted.add(id);
                 else
@@ -35305,7 +35336,10 @@ function App() {
                 done++;
                 setDeleteProgress({ done, total: ids.length });
             }
-            // IMPORTANT: Do NOT rescan automatically. Just remove the deleted assets from the current list.
+            try {
+                await ((_b = webflow.getAllAssets) === null || _b === void 0 ? void 0 : _b.call(webflow));
+            }
+            catch (_c) { }
             setScanResult((prev) => {
                 var _a;
                 if (!prev)
@@ -35320,14 +35354,21 @@ function App() {
             const remainingUnused = (scanResult.images || []).filter((img) => img.isUnused && !deleted.has(img.id)).length;
             setScreen(remainingUnused === 0 ? "success" : "results");
             if (failed.length > 0) {
-                setError(`Could not delete ${failed.length} image${failed.length > 1 ? "s" : ""}. They are still listed.`);
+                let msg = `Could not delete ${failed.length} image${failed.length > 1 ? "s" : ""}. They are still listed.`;
+                if (authFailed) {
+                    msg += "\n\nAuth issue: Please click Authorize again (or Logout → Authorize), then Refresh, and try deleting again.";
+                }
+                else if (scopeFailed) {
+                    msg += "\n\nPermission issue: Your token may not have assets:write scope. Please re-authorize the app in Webflow and grant Assets write access.";
+                }
+                setError(msg);
             }
         }
         finally {
             setDeleting(false);
             setDeleteProgress(null);
         }
-    }, [scanResult, selectedIds]);
+    }, [authGate.siteId, scanResult, selectedIds]);
     const requestDelete = (0,react__WEBPACK_IMPORTED_MODULE_1__.useCallback)(() => {
         if (selectedIds.size === 0)
             return;
@@ -35415,8 +35456,16 @@ async function request(path, init) {
         throw new ApiError(0, "API_BASE is not configured");
     const res = await fetch(`${base}${path}`, Object.assign({ credentials: "include", headers: Object.assign({ Accept: "application/json" }, ((init === null || init === void 0 ? void 0 : init.headers) || {})) }, init));
     if (!res.ok) {
-        const msg = await res.text().catch(() => "");
-        throw new ApiError(res.status, msg || res.statusText);
+        const text = await res.text().catch(() => "");
+        let msg = text || res.statusText;
+        try {
+            const j = text ? JSON.parse(text) : null;
+            if (j && typeof j === "object" && typeof j.message === "string") {
+                msg = j.message;
+            }
+        }
+        catch (_a) { }
+        throw new ApiError(res.status, msg);
     }
     if (res.status === 204)
         return {};
@@ -35436,6 +35485,13 @@ const api = {
     },
     logout: async () => {
         await request("/api/logout", { method: "POST" });
+    },
+    deleteAsset: async (siteId, assetId) => {
+        const sid = encodeURIComponent(String(siteId || "").trim());
+        const aid = encodeURIComponent(String(assetId || "").trim());
+        return await request(`/api/sites/${sid}/assets/${aid}`, {
+            method: "DELETE",
+        });
     },
 };
 

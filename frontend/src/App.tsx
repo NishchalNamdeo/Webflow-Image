@@ -652,83 +652,125 @@ export default function App() {
 
 
   const performDelete = useCallback(async () => {
-    if (!scanResult) return;
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) return;
+  if (!scanResult) return;
+  const ids = Array.from(selectedIds);
+  if (ids.length === 0) return;
 
-    setDeleting(true);
-    setDeleteProgress({ done: 0, total: ids.length });
-    setError(null);
+  setDeleting(true);
+  setDeleteProgress({ done: 0, total: ids.length });
+  setError(null);
 
-    const deleted = new Set<string>();
-    const failed: string[] = [];
+  const siteId = String(authGate.siteId || "").trim();
+
+  const deleted = new Set<string>();
+  const failed: string[] = [];
+
+  let authFailed = false;
+  let scopeFailed = false;
+
+  const tryRemoveFromDesigner = async (assetMaybe: any, assetId: string): Promise<boolean> => {
+    let asset = assetMaybe;
+
+    if (!asset && typeof webflow.getAssetById === "function") {
+      try {
+        asset = await webflow.getAssetById(assetId);
+      } catch {
+        asset = null;
+      }
+    }
+
+    if (!asset) return true;
 
     try {
-      const assets = await webflow.getAllAssets?.();
-      const list: any[] = Array.isArray(assets) ? assets : [];
-      const byId = new Map<string, any>(list.map((a: any) => [String(a.id), a]));
+      if (typeof asset.remove === "function") {
+        await asset.remove();
+        return true;
+      }
+    } catch {}
 
-      let done = 0;
-      for (const id of ids) {
-        const asset = byId.get(id);
+    try {
+      if (typeof webflow.removeAsset === "function") {
+        await webflow.removeAsset(asset);
+        return true;
+      }
+    } catch {}
 
-        let ok = false;
+    return false;
+  };
 
-        // If the asset is already missing from the Asset panel, treat as deleted.
-        if (!asset) {
+  try {
+    const assets = await webflow.getAllAssets?.().catch(() => []);
+    const list: any[] = Array.isArray(assets) ? assets : [];
+    const byId = new Map<string, any>(list.map((a: any) => [String(a.id), a]));
+
+    let done = 0;
+    for (const id of ids) {
+      const assetObj = byId.get(id);
+      let ok = false;
+
+      // 1) Primary: backend OAuth delete (removes from Webflow Assets too)
+      if (siteId) {
+        try {
+          await api.deleteAsset(siteId, id);
           ok = true;
-        } else {
-          try {
-            if (typeof asset.remove === "function") {
-              await asset.remove();
-              ok = true;
-            } else if (typeof webflow.removeAsset === "function") {
-              await webflow.removeAsset(asset);
-              ok = true;
-            }
-          } catch {
-            ok = false;
-          }
+        } catch (e: any) {
+          const status = Number(e?.status || 0);
+          const msg = String(e?.message || "").toLowerCase();
+          if (status === 401) authFailed = true;
+          if (status === 403 || msg.includes("scope") || msg.includes("assets:write")) scopeFailed = true;
+          ok = false;
         }
-
-        if (ok) deleted.add(id);
-        else failed.push(id);
-
-        done++;
-        setDeleteProgress({ done, total: ids.length });
       }
 
-      // IMPORTANT: Do NOT rescan automatically. Just remove the deleted assets from the current list.
-      setScanResult((prev) => {
-        if (!prev) return prev;
-        const nextImages = prev.images.filter((img) => !deleted.has(img.id));
-        return {
-          images: nextImages,
-          meta: {
-            ...prev.meta,
-            scannedAssets: Math.max(0, (prev.meta?.scannedAssets || 0) - deleted.size),
-          },
-        };
-      });
+      // 2) Best-effort: instantly update Assets panel UI in Designer
+      const designerOk = await tryRemoveFromDesigner(assetObj, id);
+      ok = ok || designerOk;
 
-      setSelectedIds(new Set());
+      if (ok) deleted.add(id);
+      else failed.push(id);
 
-      const remainingUnused = (scanResult.images || []).filter(
-        (img) => img.isUnused && !deleted.has(img.id)
-      ).length;
-
-      setScreen(remainingUnused === 0 ? "success" : "results");
-
-      if (failed.length > 0) {
-        setError(
-          `Could not delete ${failed.length} image${failed.length > 1 ? "s" : ""}. They are still listed.`
-        );
-      }
-    } finally {
-      setDeleting(false);
-      setDeleteProgress(null);
+      done++;
+      setDeleteProgress({ done, total: ids.length });
     }
-  }, [scanResult, selectedIds]);
+
+    try {
+      await webflow.getAllAssets?.();
+    } catch {}
+
+    setScanResult((prev) => {
+      if (!prev) return prev;
+      const nextImages = prev.images.filter((img) => !deleted.has(img.id));
+      return {
+        images: nextImages,
+        meta: {
+          ...prev.meta,
+          scannedAssets: Math.max(0, (prev.meta?.scannedAssets || 0) - deleted.size),
+        },
+      };
+    });
+
+    setSelectedIds(new Set());
+
+    const remainingUnused = (scanResult.images || []).filter(
+      (img) => img.isUnused && !deleted.has(img.id)
+    ).length;
+
+    setScreen(remainingUnused === 0 ? "success" : "results");
+
+    if (failed.length > 0) {
+      let msg = `Could not delete ${failed.length} image${failed.length > 1 ? "s" : ""}. They are still listed.`;
+      if (authFailed) {
+        msg += "\n\nAuth issue: Please click Authorize again (or Logout → Authorize), then Refresh, and try deleting again.";
+      } else if (scopeFailed) {
+        msg += "\n\nPermission issue: Your token may not have assets:write scope. Please re-authorize the app in Webflow and grant Assets write access.";
+      }
+      setError(msg);
+    }
+  } finally {
+    setDeleting(false);
+    setDeleteProgress(null);
+  }
+}, [authGate.siteId, scanResult, selectedIds]);
 
 
 

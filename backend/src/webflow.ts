@@ -117,4 +117,12 @@ export const webflowApi = {
   sites: {
     list: (token: string) => wf<any>(token, "/sites"),
   },
+  assets: {
+    // Webflow Data API v2: DELETE /v2/assets/:asset_id
+    // Required scope: assets:write
+    delete: (token: string, assetId: string) =>
+      wf<void>(token, `/assets/${encodeURIComponent(assetId)}`, {
+        method: "DELETE",
+      }),
+  },
 };

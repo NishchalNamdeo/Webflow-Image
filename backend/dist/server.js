@@ -167,6 +167,12 @@ function requireAuth(req, res, next) {
     }
     next();
 }
+function getAccessTokenForSite(req, siteId) {
+    const map = ensureAuthorizedSites(req);
+    const entry = map[String(siteId || "").trim()];
+    const token = String(entry?.accessToken || req.session?.accessToken || "").trim();
+    return token;
+}
 function ensureAuthorizedSites(req) {
     const s = req.session;
     if (!s.authorizedSites || typeof s.authorizedSites !== "object")
@@ -293,6 +299,24 @@ app.get("/api/sites", requireAuth, (req, res) => {
         .sort((a, b) => String(a.displayName || a.id).localeCompare(String(b.displayName || b.id)));
     res.json({ sites });
 });
+// Delete an asset (image) from Webflow so it disappears from the Assets panel too.
+// Frontend sends the current Designer siteId so we can validate authorization.
+app.delete("/api/sites/:siteId/assets/:assetId", requireAuth, asyncRoute(async (req, res) => {
+    const siteId = String(req.params.siteId || "").trim();
+    const assetId = String(req.params.assetId || "").trim();
+    if (!siteId || !assetId) {
+        return res.status(400).json({ message: "Missing siteId or assetId" });
+    }
+    const authorizedSites = ensureAuthorizedSites(req);
+    if (!authorizedSites[siteId]) {
+        return res.status(403).json({ message: "Site is not authorized for this session" });
+    }
+    const token = getAccessTokenForSite(req, siteId);
+    if (!token)
+        return res.status(401).json({ message: "Not authenticated" });
+    await webflowApi.assets.delete(token, assetId);
+    return res.status(204).send();
+}));
 app.post("/api/logout", (req, res) => {
     req.session.destroy(() => {
         res.status(204).send();
