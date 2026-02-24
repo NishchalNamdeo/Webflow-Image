@@ -34801,6 +34801,8 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! react/jsx-runtime */ "./node_modules/react/jsx-runtime.js");
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! react */ "./node_modules/react/index.js");
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_1___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_1__);
+/* harmony import */ var _api__WEBPACK_IMPORTED_MODULE_2__ = __webpack_require__(/*! ./api */ "./src/api.ts");
+
 
 
 const ConfirmModal = ({ state, onClose }) => {
@@ -34834,6 +34836,115 @@ function App() {
     const [screen, setScreen] = (0,react__WEBPACK_IMPORTED_MODULE_1__.useState)("intro");
     const [scanResult, setScanResult] = (0,react__WEBPACK_IMPORTED_MODULE_1__.useState)(null);
     const [error, setError] = (0,react__WEBPACK_IMPORTED_MODULE_1__.useState)(null);
+    const [authGate, setAuthGate] = (0,react__WEBPACK_IMPORTED_MODULE_1__.useState)({ status: "loading" });
+    const refreshAuth = (0,react__WEBPACK_IMPORTED_MODULE_1__.useCallback)(async () => {
+        var _a;
+        const apiBase = (0,_api__WEBPACK_IMPORTED_MODULE_2__.getApiBase)();
+        let info = null;
+        try {
+            info = (await ((_a = webflow.getSiteInfo) === null || _a === void 0 ? void 0 : _a.call(webflow))) || null;
+        }
+        catch (_b) {
+            info = null;
+        }
+        const siteId = String((info === null || info === void 0 ? void 0 : info.siteId) || "").trim();
+        const siteName = String((info === null || info === void 0 ? void 0 : info.siteName) || (info === null || info === void 0 ? void 0 : info.shortName) || "").trim();
+        const workspaceId = String((info === null || info === void 0 ? void 0 : info.workspaceId) || "").trim();
+        const workspaceSlug = String((info === null || info === void 0 ? void 0 : info.workspaceSlug) || "").trim();
+        if (!apiBase) {
+            setAuthGate({
+                status: "api_missing",
+                siteId,
+                siteName,
+                workspaceId,
+                workspaceSlug,
+                message: "API_BASE is not configured for this extension build.",
+            });
+            return;
+        }
+        const auth = await _api__WEBPACK_IMPORTED_MODULE_2__.api.authStatus();
+        if (!auth || !auth.authenticated) {
+            setAuthGate({
+                status: "needs_auth",
+                siteId,
+                siteName,
+                workspaceId,
+                workspaceSlug,
+                message: "Authorize this app from your Webflow Workspace to continue.",
+            });
+            return;
+        }
+        try {
+            const { sites } = await _api__WEBPACK_IMPORTED_MODULE_2__.api.sites();
+            const authorizedSites = Array.isArray(sites) ? sites : [];
+            const siteAuthorized = !!siteId && authorizedSites.some((s) => String(s.id) === siteId);
+            if (!siteAuthorized) {
+                setAuthGate({
+                    status: "needs_site",
+                    siteId,
+                    siteName,
+                    workspaceId,
+                    workspaceSlug,
+                    authorizedSites,
+                    message: "This site is not authorized yet. Authorize access to this site and then refresh here.",
+                });
+                return;
+            }
+            setAuthGate({
+                status: "ok",
+                siteId,
+                siteName,
+                workspaceId,
+                workspaceSlug,
+                authorizedSites,
+            });
+        }
+        catch (_c) {
+            setAuthGate({
+                status: "needs_auth",
+                siteId,
+                siteName,
+                workspaceId,
+                workspaceSlug,
+                message: "Could not verify authorization with the backend. Authorize again and refresh.",
+            });
+        }
+    }, []);
+    const openAuthorize = (0,react__WEBPACK_IMPORTED_MODULE_1__.useCallback)(() => {
+        const base = (0,_api__WEBPACK_IMPORTED_MODULE_2__.getApiBase)();
+        if (!base)
+            return;
+        const u = new URL(`${base}/auth`);
+        u.searchParams.set("redirectTo", window.location.href);
+        if (authGate.workspaceId)
+            u.searchParams.set("workspace", authGate.workspaceId);
+        const url = u.toString();
+        try {
+            if (typeof (webflow === null || webflow === void 0 ? void 0 : webflow.openUrlInNewTab) === "function") {
+                webflow.openUrlInNewTab(url);
+            }
+            else {
+                window.open(url, "_blank", "noopener,noreferrer");
+            }
+        }
+        catch (_a) {
+            window.open(url, "_blank", "noopener,noreferrer");
+        }
+    }, [authGate.workspaceId]);
+    const logout = (0,react__WEBPACK_IMPORTED_MODULE_1__.useCallback)(async () => {
+        try {
+            await _api__WEBPACK_IMPORTED_MODULE_2__.api.logout();
+        }
+        catch (_a) {
+            // ignore
+        }
+        finally {
+            await refreshAuth();
+        }
+    }, [refreshAuth]);
+    (0,react__WEBPACK_IMPORTED_MODULE_1__.useEffect)(() => {
+        refreshAuth();
+    }, [refreshAuth]);
     const [scanProgress, setScanProgress] = (0,react__WEBPACK_IMPORTED_MODULE_1__.useState)(0);
     const [scanStep, setScanStep] = (0,react__WEBPACK_IMPORTED_MODULE_1__.useState)("");
     const [query, setQuery] = (0,react__WEBPACK_IMPORTED_MODULE_1__.useState)("");
@@ -35116,15 +35227,38 @@ function App() {
             return next;
         });
     }, []);
-    const selectAllUnused = (0,react__WEBPACK_IMPORTED_MODULE_1__.useCallback)(() => {
+    const allUnusedIds = (0,react__WEBPACK_IMPORTED_MODULE_1__.useMemo)(() => {
         const ids = new Set();
-        for (const img of ((scanResult === null || scanResult === void 0 ? void 0 : scanResult.images) || [])) {
+        for (const img of (scanResult === null || scanResult === void 0 ? void 0 : scanResult.images) || []) {
             if (img.isUnused)
                 ids.add(img.id);
         }
-        setSelectedIds(ids);
+        return ids;
     }, [scanResult]);
-    const clearSelection = (0,react__WEBPACK_IMPORTED_MODULE_1__.useCallback)(() => setSelectedIds(new Set()), []);
+    const allUnusedSelected = (0,react__WEBPACK_IMPORTED_MODULE_1__.useMemo)(() => {
+        if (allUnusedIds.size === 0)
+            return false;
+        for (const id of allUnusedIds) {
+            if (!selectedIds.has(id))
+                return false;
+        }
+        return true;
+    }, [allUnusedIds, selectedIds]);
+    const toggleSelectAllUnused = (0,react__WEBPACK_IMPORTED_MODULE_1__.useCallback)(() => {
+        setSelectedIds((prev) => {
+            if (allUnusedIds.size === 0)
+                return new Set(prev);
+            // Are ALL unused ids currently selected?
+            let isAll = true;
+            for (const id of allUnusedIds) {
+                if (!prev.has(id)) {
+                    isAll = false;
+                    break;
+                }
+            }
+            return isAll ? new Set() : new Set(allUnusedIds);
+        });
+    }, [allUnusedIds]);
     const performDelete = (0,react__WEBPACK_IMPORTED_MODULE_1__.useCallback)(async () => {
         var _a;
         if (!scanResult)
@@ -35134,6 +35268,9 @@ function App() {
             return;
         setDeleting(true);
         setDeleteProgress({ done: 0, total: ids.length });
+        setError(null);
+        const deleted = new Set();
+        const failed = [];
         try {
             const assets = await ((_a = webflow.getAllAssets) === null || _a === void 0 ? void 0 : _a.call(webflow));
             const list = Array.isArray(assets) ? assets : [];
@@ -35141,31 +35278,56 @@ function App() {
             let done = 0;
             for (const id of ids) {
                 const asset = byId.get(id);
-                if (asset) {
+                let ok = false;
+                // If the asset is already missing from the Asset panel, treat as deleted.
+                if (!asset) {
+                    ok = true;
+                }
+                else {
                     try {
                         if (typeof asset.remove === "function") {
                             await asset.remove();
+                            ok = true;
                         }
                         else if (typeof webflow.removeAsset === "function") {
                             await webflow.removeAsset(asset);
+                            ok = true;
                         }
                     }
                     catch (_b) {
-                        // ignore
+                        ok = false;
                     }
                 }
+                if (ok)
+                    deleted.add(id);
+                else
+                    failed.push(id);
                 done++;
                 setDeleteProgress({ done, total: ids.length });
             }
-            setDeleteProgress({ done: ids.length, total: ids.length });
-            await runScan();
+            // IMPORTANT: Do NOT rescan automatically. Just remove the deleted assets from the current list.
+            setScanResult((prev) => {
+                var _a;
+                if (!prev)
+                    return prev;
+                const nextImages = prev.images.filter((img) => !deleted.has(img.id));
+                return {
+                    images: nextImages,
+                    meta: Object.assign(Object.assign({}, prev.meta), { scannedAssets: Math.max(0, (((_a = prev.meta) === null || _a === void 0 ? void 0 : _a.scannedAssets) || 0) - deleted.size) }),
+                };
+            });
+            setSelectedIds(new Set());
+            const remainingUnused = (scanResult.images || []).filter((img) => img.isUnused && !deleted.has(img.id)).length;
+            setScreen(remainingUnused === 0 ? "success" : "results");
+            if (failed.length > 0) {
+                setError(`Could not delete ${failed.length} image${failed.length > 1 ? "s" : ""}. They are still listed.`);
+            }
         }
         finally {
             setDeleting(false);
             setDeleteProgress(null);
-            setSelectedIds(new Set());
         }
-    }, [runScan, scanResult, selectedIds]);
+    }, [scanResult, selectedIds]);
     const requestDelete = (0,react__WEBPACK_IMPORTED_MODULE_1__.useCallback)(() => {
         if (selectedIds.size === 0)
             return;
@@ -35183,6 +35345,13 @@ function App() {
     const PrimaryButton = ({ onClick, disabled, children }) => ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("button", { onClick: onClick, disabled: disabled, className: "inline-flex items-center justify-center rounded-xl bg-white text-neutral-950 px-3 py-2 text-xs font-bold hover:opacity-90 disabled:opacity-60", children: children }));
     const GhostButton = ({ onClick, disabled, children }) => ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("button", { onClick: onClick, disabled: disabled, className: "rounded-xl border border-neutral-800 bg-neutral-900 px-2.5 py-1.5 text-xs font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50", children: children }));
     const DangerButton = ({ onClick, disabled, children }) => ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("button", { onClick: onClick, disabled: disabled, className: "rounded-xl bg-red-500/90 text-white px-3 py-2 text-xs font-bold hover:bg-red-500 disabled:opacity-50", children: children }));
+    // -----------------------------
+    // Authorization gate
+    // -----------------------------
+    if (authGate.status !== "ok") {
+        const canAuthorize = authGate.status === "needs_auth" || authGate.status === "needs_site";
+        return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "p-4", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("h1", { className: "text-xl font-bold tracking-tight", children: "Bulk Image Cleaner" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("p", { className: "mt-1 text-xs text-neutral-400", children: authGate.siteName ? `Site: ${authGate.siteName}` : "Open this extension inside Webflow Designer" })] }), authGate.message && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-3 rounded-xl border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs text-neutral-200 whitespace-pre-line", children: authGate.message })), authGate.status === "loading" ? ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-4 text-xs text-neutral-400", children: "Checking authorization\u2026" })) : ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mt-4 flex flex-wrap items-center gap-2", children: [canAuthorize && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(PrimaryButton, { onClick: openAuthorize, disabled: false, children: "Authorize" })), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(GhostButton, { onClick: refreshAuth, disabled: false, children: "Refresh" }), authGate.status !== "api_missing" && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(GhostButton, { onClick: logout, disabled: false, children: "Logout" }))] })), authGate.authorizedSites && authGate.authorizedSites.length > 0 && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "text-xs font-semibold text-neutral-100", children: "Authorized sites" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mt-2 space-y-1 text-[11px] text-neutral-400", children: [authGate.authorizedSites.slice(0, 8).map((s) => ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "flex items-center justify-between gap-2", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: "truncate", children: s.displayName || s.shortName || s.id }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: "text-neutral-500", children: s.id })] }, s.id))), authGate.authorizedSites.length > 8 && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "text-neutral-500", children: ["+", authGate.authorizedSites.length - 8, " more"] }))] })] })), authGate.status === "api_missing" && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-4 text-[11px] text-neutral-500", children: "Tip: Set API_BASE in frontend/.env (or as window.__API_BASE__) to your backend URL." }))] }) }));
+    }
     if (screen === "intro") {
         return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "p-4", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("h1", { className: "text-xl font-bold tracking-tight", children: "Bulk Image Cleaner" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("p", { className: "mt-1 text-xs text-neutral-400", children: "Clean unused images from your Webflow project in seconds" })] }), error && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200", children: error })), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/40 p-4", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "text-sm font-semibold text-neutral-100", children: "What it does" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("ul", { className: "mt-2 space-y-1 text-xs text-neutral-400 list-disc pl-4", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("li", { children: "Finds all unused images in your Webflow project" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("li", { children: "Shows you which images are safe to delete" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("li", { children: "Lets you delete images one by one or all at once" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("li", { children: "Helps you search for specific images by name" })] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-3 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200", children: "Some images used in custom code, embeds, or external scripts might not be detected. Check these images manually before deleting." }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-4", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(PrimaryButton, { onClick: runScan, disabled: deleting, children: "Scan for Unused Images" }) })] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-4 text-[11px] text-neutral-500", children: "OAuth is handled by your backend (/auth). After you authorize in the Webflow dashboard, this extension runs directly \u2014 no authorize button here." })] }) }));
     }
@@ -35192,13 +35361,83 @@ function App() {
     if (screen === "success") {
         return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "p-4", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "rounded-2xl border border-neutral-800 bg-neutral-900/40 p-5 text-center", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "text-xl font-bold", children: "Your Project Is Clean \uD83C\uDF89" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-2 text-xs text-neutral-400", children: "No unused images found. All images in your project are currently in use." }), (scanResult === null || scanResult === void 0 ? void 0 : scanResult.meta) && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mt-4 grid grid-cols-2 gap-2 text-[11px] text-left", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "text-neutral-500", children: "Pages scanned" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-0.5 text-neutral-100 font-semibold", children: scanResult.meta.scannedPages })] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "text-neutral-500", children: "Styles scanned" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-0.5 text-neutral-100 font-semibold", children: scanResult.meta.scannedStyles })] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "text-neutral-500", children: "Assets checked" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-0.5 text-neutral-100 font-semibold", children: scanResult.meta.scannedAssets })] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "text-neutral-500", children: "Time" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mt-0.5 text-neutral-100 font-semibold", children: [scanResult.meta.durationMs, "ms"] })] })] })), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mt-5 flex items-center justify-center gap-2", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(GhostButton, { onClick: runScan, disabled: deleting, children: "Rescan for Unused Images" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(GhostButton, { onClick: reset, disabled: deleting, children: "Back" })] })] }) }) }));
     }
-    return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden relative", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(ConfirmModal, { state: confirmState, onClose: () => setConfirmState((s) => (Object.assign(Object.assign({}, s), { open: false }))) }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "p-4", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "flex items-start justify-between gap-3", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "min-w-0", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("h1", { className: "text-lg font-bold tracking-tight", children: "See Exactly What\u2019s Unused" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("p", { className: "mt-1 text-xs text-neutral-400", children: ["Only images marked ", (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: "text-neutral-200 font-semibold", children: "Unused" }), " are shown."] })] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(GhostButton, { onClick: runScan, disabled: deleting, children: "Rescan" })] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-3", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("input", { value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search images by name\u2026", className: "w-full rounded-2xl bg-neutral-900 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600" }) }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mt-3 flex items-center gap-2", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(GhostButton, { onClick: selectAllUnused, disabled: deleting, children: "Select All" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(GhostButton, { onClick: clearSelection, disabled: deleting, children: "Clear" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "flex-1" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "text-[11px] text-neutral-400 mr-2", children: ["Selected images: ", selectedCount] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(DangerButton, { onClick: requestDelete, disabled: deleting || selectedCount === 0, children: deleting ? "Deleting…" : "Delete Selected" })] }), error && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200", children: error })), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mt-3 rounded-2xl border border-neutral-800 overflow-hidden", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "grid grid-cols-12 gap-2 px-3 py-2 text-[10px] uppercase tracking-wide text-neutral-400 bg-neutral-900/60", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "col-span-1", children: " " }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "col-span-5", children: "Image Name" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "col-span-4", children: "Image ID" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "col-span-2 text-right", children: "Status" })] }), unusedImages.length === 0 ? ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "px-3 py-10 text-center", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "text-sm text-neutral-200", children: query.trim() ? "No unused images match your search." : "No unused images found" }), !query.trim() && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-1 text-xs text-neutral-400", children: "Your project is already clean. All images are currently in use." })), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-4 flex justify-center", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(GhostButton, { onClick: () => setScreen("success"), children: "View Clean State" }) })] })) : ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "divide-y divide-neutral-800", children: unusedImages.map((img) => {
+    return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden relative", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(ConfirmModal, { state: confirmState, onClose: () => setConfirmState((s) => (Object.assign(Object.assign({}, s), { open: false }))) }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "p-4", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "flex items-start justify-between gap-3", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "min-w-0", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("h1", { className: "text-lg font-bold tracking-tight", children: "See Exactly What\u2019s Unused" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("p", { className: "mt-1 text-xs text-neutral-400", children: ["Only images marked ", (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { className: "text-neutral-200 font-semibold", children: "Unused" }), " are shown."] })] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(GhostButton, { onClick: runScan, disabled: deleting, children: "Rescan" })] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-3", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("input", { value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Search images by name\u2026", className: "w-full rounded-2xl bg-neutral-900 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600" }) }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mt-3 flex items-center gap-2", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(GhostButton, { onClick: toggleSelectAllUnused, disabled: deleting || unusedImages.length === 0, children: allUnusedSelected ? "Unselect All" : "Select All" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "flex-1" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "text-[11px] text-neutral-400 mr-2", children: ["Selected images: ", selectedCount] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(DangerButton, { onClick: requestDelete, disabled: deleting || selectedCount === 0, children: deleting ? "Deleting…" : "Delete Selected" })] }), error && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200", children: error })), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mt-3 rounded-2xl border border-neutral-800 overflow-hidden", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "grid grid-cols-12 gap-2 px-3 py-2 text-[10px] uppercase tracking-wide text-neutral-400 bg-neutral-900/60", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "col-span-1", children: " " }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "col-span-5", children: "Image Name" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "col-span-4", children: "Image ID" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "col-span-2 text-right", children: "Status" })] }), unusedImages.length === 0 ? ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "px-3 py-10 text-center", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "text-sm text-neutral-200", children: query.trim() ? "No unused images match your search." : "No unused images found" }), !query.trim() && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-1 text-xs text-neutral-400", children: "Your project is already clean. All images are currently in use." })), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-4 flex justify-center", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(GhostButton, { onClick: () => setScreen("success"), children: "View Clean State" }) })] })) : ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "divide-y divide-neutral-800", children: unusedImages.map((img) => {
                                     const checked = selectedIds.has(img.id);
                                     return ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "grid grid-cols-12 gap-2 px-3 py-2 items-center hover:bg-neutral-900/40", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "col-span-1", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("input", { type: "checkbox", checked: checked, onChange: () => toggle(img.id), className: "accent-white" }) }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "col-span-5 min-w-0", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "flex items-center gap-2 min-w-0", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "h-8 w-10 rounded-md overflow-hidden bg-neutral-900 border border-neutral-800 shrink-0", children: img.url ? ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("img", { src: img.url, alt: img.name, className: "h-full w-full object-cover" })) : null }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "min-w-0", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "text-xs font-semibold text-neutral-100 truncate", children: img.name }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "text-[10px] text-neutral-500 truncate", children: img.mimeType || "image" })] })] }) }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "col-span-4 min-w-0", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "text-[11px] text-neutral-300 truncate", children: img.id }) }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "col-span-2 text-right", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(Pill, { children: "Unused" }) })] }, img.id));
                                 }) }))] }), deleteProgress && ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mt-3 rounded-2xl border border-neutral-800 bg-neutral-900/50 p-3", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "flex items-center justify-between text-[11px] text-neutral-400", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("span", { children: "Deletion progress" }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("span", { children: [deleteProgress.done, "/", deleteProgress.total] })] }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-2", children: (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)(ProgressBar, { value: deleteProgress.total === 0
                                         ? 0
                                         : (deleteProgress.done / deleteProgress.total) * 100 }) })] })), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("div", { className: "mt-3 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200", children: "Important: Images referenced in custom code, embeds, or external scripts might not be detected. Please verify before deleting." }), (0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "mt-4 flex items-center justify-between", children: [(0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsx)("button", { onClick: reset, className: "text-xs text-neutral-400 underline underline-offset-2 hover:text-neutral-200", children: "Back to start" }), (scanResult === null || scanResult === void 0 ? void 0 : scanResult.meta) ? ((0,react_jsx_runtime__WEBPACK_IMPORTED_MODULE_0__.jsxs)("div", { className: "text-[11px] text-neutral-500", children: ["Scanned ", scanResult.meta.scannedPages, " pages \u00B7 ", scanResult.meta.scannedAssets, " assets \u00B7 ", scanResult.meta.durationMs, "ms"] })) : null] })] })] }));
 }
+
+
+/***/ },
+
+/***/ "./src/api.ts"
+/*!********************!*\
+  !*** ./src/api.ts ***!
+  \********************/
+(__unused_webpack_module, __webpack_exports__, __webpack_require__) {
+
+__webpack_require__.r(__webpack_exports__);
+/* harmony export */ __webpack_require__.d(__webpack_exports__, {
+/* harmony export */   ApiError: () => (/* binding */ ApiError),
+/* harmony export */   api: () => (/* binding */ api),
+/* harmony export */   getApiBase: () => (/* binding */ getApiBase)
+/* harmony export */ });
+class ApiError extends Error {
+    constructor(status, message) {
+        super(message);
+        this.status = status;
+    }
+}
+const normalize = (v) => String(v || "").trim().replace(/\/+$/, "");
+function getApiBase() {
+    const compile =  true ? "https://webflow-image.vercel.app" : 0;
+    const runtime = window.__API_BASE__ ? String(window.__API_BASE__) : "";
+    const base = normalize(compile || runtime);
+    if (!base)
+        return "";
+    // Allow http for localhost, otherwise require https.
+    try {
+        const u = new URL(base);
+        const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+        if (!isLocal && u.protocol !== "https:")
+            return "";
+        return u.toString().replace(/\/+$/, "");
+    }
+    catch (_a) {
+        return "";
+    }
+}
+async function request(path, init) {
+    const base = getApiBase();
+    if (!base)
+        throw new ApiError(0, "API_BASE is not configured");
+    const res = await fetch(`${base}${path}`, Object.assign({ credentials: "include", headers: Object.assign({ Accept: "application/json" }, ((init === null || init === void 0 ? void 0 : init.headers) || {})) }, init));
+    if (!res.ok) {
+        const msg = await res.text().catch(() => "");
+        throw new ApiError(res.status, msg || res.statusText);
+    }
+    if (res.status === 204)
+        return {};
+    return (await res.json().catch(() => ({})));
+}
+const api = {
+    authStatus: async () => {
+        try {
+            return await request("/api/auth/status");
+        }
+        catch (_a) {
+            return null;
+        }
+    },
+    sites: async () => {
+        return await request("/api/sites");
+    },
+    logout: async () => {
+        await request("/api/logout", { method: "POST" });
+    },
+};
 
 
 /***/ }
