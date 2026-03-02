@@ -220,8 +220,14 @@
   .static {
     position: static;
   }
+  .sticky {
+    position: sticky;
+  }
   .inset-0 {
     inset: calc(var(--spacing) * 0);
+  }
+  .top-0 {
+    top: calc(var(--spacing) * 0);
   }
   .z-10 {
     z-index: 10;
@@ -318,6 +324,9 @@
   }
   .h-full {
     height: 100%;
+  }
+  .max-h-\[60vh\] {
+    max-height: 60vh;
   }
   .min-h-screen {
     min-height: 100vh;
@@ -422,6 +431,9 @@
   }
   .overflow-x-hidden {
     overflow-x: hidden;
+  }
+  .overflow-y-auto {
+    overflow-y: auto;
   }
   .rounded-2xl {
     border-radius: var(--radius-2xl);

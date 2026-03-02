@@ -836,7 +836,7 @@ export default function App() {
       <div className="min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden">
         <div className="p-4">
           <div>
-            <h1 className="text-xl font-bold tracking-tight">Bulk Image Cleaner</h1>
+            <h1 className="text-xl font-bold tracking-tight">Bulk Image Cleaner </h1>
             <p className="mt-1 text-xs text-neutral-400">
               {authGate.siteName ? `Site: ${authGate.siteName}` : "Open this extension inside Webflow Designer"}
             </p>
@@ -1094,73 +1094,84 @@ export default function App() {
           </div>
         )}
 
-        <div className="mt-3 rounded-2xl border border-neutral-800 overflow-hidden">
-          <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[10px] uppercase tracking-wide text-neutral-400 bg-neutral-900/60">
-            <div className="col-span-1"> </div>
-            <div className="col-span-5">Image Name</div>
-            <div className="col-span-4">Image ID</div>
-            <div className="col-span-2 text-right">Status</div>
+       <div className="mt-3 rounded-2xl border border-neutral-800 overflow-hidden">
+  {/* Sticky header (scroll karte time bhi upar rahega) */}
+  <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[10px] uppercase tracking-wide text-neutral-400 bg-neutral-900/60 sticky top-0 z-10">
+    <div className="col-span-1"> </div>
+    <div className="col-span-5">Image Name</div>
+    <div className="col-span-4">Image ID</div>
+    <div className="col-span-2 text-right">Status</div>
+  </div>
+
+  {/* ✅ Scrollable body */}
+  <div className="max-h-[60vh] overflow-y-auto">
+    {unusedImages.length === 0 ? (
+      <div className="px-3 py-10 text-center">
+        <div className="text-sm text-neutral-200">
+          {query.trim() ? "No unused images match your search." : "No unused images found"}
+        </div>
+        {!query.trim() && (
+          <div className="mt-1 text-xs text-neutral-400">
+            Your project is already clean. All images are currently in use.
           </div>
+        )}
+        <div className="mt-4 flex justify-center">
+          <GhostButton onClick={() => setScreen("success")}>View Clean State</GhostButton>
+        </div>
+      </div>
+    ) : (
+      <div className="divide-y divide-neutral-800">
+        {unusedImages.map((img) => {
+          const checked = selectedIds.has(img.id);
+          return (
+            <div
+              key={img.id}
+              className="grid grid-cols-12 gap-2 px-3 py-2 items-center hover:bg-neutral-900/40"
+            >
+              <div className="col-span-1">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggle(img.id)}
+                  className="accent-white"
+                />
+              </div>
 
-          {unusedImages.length === 0 ? (
-            <div className="px-3 py-10 text-center">
-              <div className="text-sm text-neutral-200">
-                {query.trim() ? "No unused images match your search." : "No unused images found"}
-              </div>
-              {!query.trim() && (
-                <div className="mt-1 text-xs text-neutral-400">
-                  Your project is already clean. All images are currently in use.
-                </div>
-              )}
-              <div className="mt-4 flex justify-center">
-                <GhostButton onClick={() => setScreen("success")}>View Clean State</GhostButton>
-              </div>
-            </div>
-          ) : (
-            <div className="divide-y divide-neutral-800">
-              {unusedImages.map((img) => {
-                const checked = selectedIds.has(img.id);
-                return (
-                  <div
-                    key={img.id}
-                    className="grid grid-cols-12 gap-2 px-3 py-2 items-center hover:bg-neutral-900/40"
-                  >
-                    <div className="col-span-1">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggle(img.id)}
-                        className="accent-white"
+              <div className="col-span-5 min-w-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="h-8 w-10 rounded-md overflow-hidden bg-neutral-900 border border-neutral-800 shrink-0">
+                    {img.url ? (
+                      <img
+                        src={img.url}
+                        alt={img.name}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
                       />
-                    </div>
-
-                    <div className="col-span-5 min-w-0">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="h-8 w-10 rounded-md overflow-hidden bg-neutral-900 border border-neutral-800 shrink-0">
-                          {img.url ? (
-                            <img src={img.url} alt={img.name} className="h-full w-full object-cover" />
-                          ) : null}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-xs font-semibold text-neutral-100 truncate">{img.name}</div>
-                          <div className="text-[10px] text-neutral-500 truncate">{img.mimeType || "image"}</div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="col-span-4 min-w-0">
-                      <div className="text-[11px] text-neutral-300 truncate">{img.id}</div>
-                    </div>
-
-                    <div className="col-span-2 text-right">
-                      <Pill>Unused</Pill>
+                    ) : null}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-neutral-100 truncate">{img.name}</div>
+                    <div className="text-[10px] text-neutral-500 truncate">
+                      {img.mimeType || "image"}
                     </div>
                   </div>
-                );
-              })}
+                </div>
+              </div>
+
+              <div className="col-span-4 min-w-0">
+                <div className="text-[11px] text-neutral-300 truncate">{img.id}</div>
+              </div>
+
+              <div className="col-span-2 text-right">
+                <Pill>Unused</Pill>
+              </div>
             </div>
-          )}
-        </div>
+          );
+        })}
+      </div>
+    )}
+  </div>
+</div>
 
         {deleteProgress && (
           <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-900/50 p-3">
