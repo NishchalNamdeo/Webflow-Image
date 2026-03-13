@@ -13,7 +13,6 @@ export function isWebflowError(e) {
     return e instanceof WebflowError || (e && typeof e.status === "number" && e.body);
 }
 const API = "https://api.webflow.com/v2";
-const BETA = "https://api.webflow.com/beta";
 function normalizeScopes(raw) {
     return raw
         .split(/[\s,]+/)
@@ -92,37 +91,12 @@ async function wf(accessToken, path, init = {}) {
     }
     return { data };
 }
-async function wfBeta(accessToken, path, init = {}) {
-    const res = await fetch(`${BETA}${path}`, {
-        ...init,
-        headers: {
-            Accept: "application/json",
-            Authorization: `Bearer ${accessToken}`,
-            ...(init.headers || {}),
-        },
-    });
-    const text = await res.text();
-    const data = text ? JSON.parse(text) : undefined;
-    if (!res.ok) {
-        throw new WebflowError(res.status, data?.message || "Webflow API error", data, res.headers);
-    }
-    return { data };
-}
 export const webflowApi = {
     token: {
         authorizedBy: (token) => wf(token, "/token/authorized_by"),
         introspect: (token) => wf(token, "/token/introspect"),
-        resolveIdToken: (token, idToken) => wfBeta(token, "/token/resolve", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ idToken }),
-        }),
     },
     sites: {
         list: (token) => wf(token, "/sites"),
-    },
-    assets: {
-        list: (token) => wf(token, "/assets"),
-        remove: (token, assetId) => wf(token, `/assets/${assetId}`, { method: "DELETE" }),
     },
 };

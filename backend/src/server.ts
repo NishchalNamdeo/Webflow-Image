@@ -12,7 +12,8 @@ import {
   isWebflowError,
   WebflowError,
 } from "./webflow.js";
-import { createTokenStore, type StoredToken } from "./tokenStore.js";
+import { getStoredSiteAuth, touchStoredSiteAuth, upsertStoredSiteAuth } from "./persistentAuth.js";
+
 
 const asyncRoute =
   (
@@ -126,19 +127,11 @@ const defaultSameSite: "lax" | "none" =
   cookieSecureSetting === true ? "none" : "lax";
 
 let redisStore: any = undefined;
-let redisClient: ReturnType<typeof createClient> | null = null;
 if (config.redisUrl) {
-  redisClient = createClient({ url: config.redisUrl });
+  const redisClient = createClient({ url: config.redisUrl });
   redisClient.connect().catch((e) => console.error("Redis connect error", e));
   redisStore = new RedisStore({ client: redisClient, prefix: "bulk_image_cleaner:" });
 }
-
-// Token store: enables cross-browser use after ONE OAuth authorize.
-// - Uses Redis when available.
-// - Falls back to a local file store in ./data/token-store.json.
-const tokenStorePromise = createTokenStore({
-  redis: (redisClient as any) || null,
-});
 
 app.use(
   session({
@@ -348,38 +341,20 @@ app.get(
       });
     }
 
-    // Persist tokens for cross-browser usage.
-    // After one OAuth authorize, the frontend can "bootstrap" a fresh session
-    // by sending a short-lived Webflow ID token.
-    try {
-      const store = await tokenStorePromise;
-
-      let userId = "";
-      try {
-        const me = await webflowApi.token.authorizedBy(token.accessToken);
-        userId = String((me as any)?.data?.id || (me as any)?.data?.user?.id || "");
-      } catch {
-        userId = "";
-      }
-
-      for (const siteId of siteIds) {
-        const entry: StoredToken = {
-          siteId,
+    // Persist auth per-site so switching browsers (Chrome/Safari) doesn't require re-authorize again.
+    await Promise.all(
+      siteIds.map((siteId) =>
+        upsertStoredSiteAuth({
+          siteId: String(siteId),
           siteName: idToName[siteId],
-          userId: userId || undefined,
           accessToken: token.accessToken,
-          scope: token.scope,
-          createdAt: now,
-          updatedAt: now,
-        };
-        await store.setResolverToken(siteId, entry);
-        if (userId) {
-          await store.setUserSiteToken(userId, siteId, entry);
-        }
-      }
-    } catch (e) {
-      console.warn("Token store persist failed", e);
-    }
+          scopes: token.scope,
+          firstSeenAt: now,
+          lastSeenAt: now,
+        })
+      )
+    );
+
 
     await new Promise<void>((resolve, reject) =>
       req.session.save((err) => (err ? reject(err) : resolve()))
@@ -392,14 +367,48 @@ app.get(
 // -----------------------------
 // Minimal API (optional)
 // -----------------------------
-app.get("/api/auth/status", (req: Request, res: Response) => {
-  const map = ensureAuthorizedSites(req);
-  res.json({
-    authenticated: hasAnyAuthorization(req),
-    authorizedSitesCount: Object.keys(map).length,
-    siteIds: Object.keys(map),
-  });
-});
+app.get(
+  "/api/auth/status",
+  asyncRoute(async (req: Request, res: Response) => {
+    const siteHint = String((req.query as any)?.siteId || "").trim();
+
+    let authenticated = hasAnyAuthorization(req);
+
+    // If this browser session is not authorized, but we already have a stored token for this site,
+    // auto-hydrate the session (so switching browsers doesn't require re-authorize again).
+    if (!authenticated && siteHint) {
+      const stored = await getStoredSiteAuth(siteHint);
+      if (stored?.accessToken) {
+        const now = Date.now();
+        upsertAuthorizedSite(req, siteHint, {
+          accessToken: stored.accessToken,
+          scopes: stored.scopes,
+          siteName: stored.siteName,
+          lastSeenAt: now,
+        });
+
+        (req.session as any).accessToken = stored.accessToken;
+        (req.session as any).scopes = stored.scopes;
+
+        await new Promise<void>((resolve) => req.session.save(() => resolve()));
+        authenticated = true;
+
+        // update lastSeenAt in store
+        await touchStoredSiteAuth(siteHint);
+      }
+    }
+
+    const s: any = req.session as any;
+    const map =
+      s && s.authorizedSites && typeof s.authorizedSites === "object" ? s.authorizedSites : {};
+
+    res.json({
+      authenticated,
+      authorizedSitesCount: Object.keys(map).length,
+      siteIds: Object.keys(map),
+    });
+  })
+);
 
 app.get(
   "/api/me",
@@ -409,67 +418,6 @@ app.get(
     if (!token) return res.status(401).json({ message: "Not authenticated" });
     const { data } = await webflowApi.token.authorizedBy(token);
     res.json(data);
-  })
-);
-
-// Cross-browser session bootstrap.
-// If a user has already OAuth-authorized once, we store tokens server-side.
-// When opening the extension in a different browser, the frontend can send a short-lived
-// Webflow ID token + siteId to rebuild the session without requiring OAuth again.
-app.post(
-  "/api/bootstrap",
-  asyncRoute(async (req: Request, res: Response) => {
-    const siteId = String(req.body?.siteId || "").trim();
-    const idToken = String(req.body?.idToken || req.header("X-Webflow-Id-Token") || "").trim();
-
-    if (!siteId || !idToken) {
-      return res.status(400).json({ authenticated: false, message: "Missing siteId or idToken" });
-    }
-
-    const store = await tokenStorePromise;
-    const resolver = await store.getResolverToken(siteId);
-    if (!resolver) {
-      return res.status(401).json({ authenticated: false, message: "Site not authorized yet" });
-    }
-
-    const resolved = await webflowApi.token.resolveIdToken(resolver.accessToken, idToken);
-    const resolvedSiteId = String((resolved as any)?.data?.siteId || "").trim();
-    const userId = String((resolved as any)?.data?.id || "").trim();
-
-    if (!resolvedSiteId || resolvedSiteId !== siteId) {
-      return res.status(403).json({ authenticated: false, message: "ID token site mismatch" });
-    }
-
-    if (!userId) {
-      return res.status(403).json({ authenticated: false, message: "Unable to resolve user" });
-    }
-
-    const userToken = await store.getUserSiteToken(userId, siteId);
-    if (!userToken) {
-      return res.status(401).json({ authenticated: false, message: "User has not authorized this site" });
-    }
-
-    // Restore session
-    req.session.accessToken = userToken.accessToken;
-    req.session.scopes = userToken.scope || req.session.scopes;
-    const now = Date.now();
-    upsertAuthorizedSite(req, siteId, {
-      accessToken: userToken.accessToken,
-      scopes: userToken.scope || "",
-      siteName: userToken.siteName,
-      lastSeenAt: now,
-    });
-
-    await new Promise<void>((resolve, reject) =>
-      req.session.save((err) => (err ? reject(err) : resolve()))
-    );
-
-    const map = ensureAuthorizedSites(req);
-    return res.json({
-      authenticated: true,
-      authorizedSitesCount: Object.keys(map).length,
-      siteIds: Object.keys(map),
-    });
   })
 );
 

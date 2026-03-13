@@ -31,7 +31,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const base = getApiBase();
   if (!base) throw new ApiError(0, "API_BASE is not configured");
 
-  const res = await fetch(`${base}${path}`, {
+  const res = await fetch(`${base}${path}` , {
     credentials: "include",
     headers: {
       Accept: "application/json",
@@ -55,11 +55,6 @@ export type AuthStatus = {
   siteIds?: string[];
 };
 
-export type BootstrapRequest = {
-  siteId: string;
-  idToken: string;
-};
-
 export type SiteInfoSummary = {
   id: string;
   displayName?: string;
@@ -69,20 +64,14 @@ export type SiteInfoSummary = {
 export type SiteListResponse = { sites: SiteInfoSummary[] };
 
 export const api = {
-  authStatus: async (): Promise<AuthStatus | null> => {
+  // siteId passed here allows backend to auto-hydrate authorization across browsers
+  authStatus: async (siteId?: string): Promise<AuthStatus | null> => {
     try {
-      return await request<AuthStatus>("/api/auth/status");
+      const q = siteId ? `?siteId=${encodeURIComponent(String(siteId))}` : "";
+      return await request<AuthStatus>(`/api/auth/status${q}`);
     } catch {
       return null;
     }
-  },
-
-  bootstrap: async (payload: BootstrapRequest): Promise<AuthStatus> => {
-    return await request<AuthStatus>("/api/bootstrap", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
   },
 
   sites: async (): Promise<SiteListResponse> => {
