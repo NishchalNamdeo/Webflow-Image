@@ -87,7 +87,7 @@ const ConfirmModal: React.FC<{
       <div className="p-4" onClick={(e) => e.stopPropagation()}>
         <div className="rounded-2xl border border-neutral-800 bg-neutral-950 shadow-xl p-4">
           <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-full bg-red-500/10 border border-red-500/20">
+            <div className={["mt-0.5 flex h-10 w-10 items-center justify-center rounded-full", danger ? "bg-red-500/10 border border-red-500/20" : "bg-neutral-800/40 border border-neutral-700"].join(" ")}>
               <svg
                 width="18"
                 height="18"
@@ -122,16 +122,20 @@ const ConfirmModal: React.FC<{
                 <div className="mt-1 whitespace-pre-line text-xs text-neutral-400 leading-relaxed">{body}</div>
               )}
               <div className="mt-4 flex gap-2">
-                <button
-                  onClick={onClose}
-                  className="flex-1 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-medium text-neutral-200 hover:bg-neutral-800"
-                >
-                  {cancelText}
-                </button>
+                {cancelText ? (
+                  <button
+                    onClick={onClose}
+                    className="flex-1 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-medium text-neutral-200 hover:bg-neutral-800"
+                  >
+                    {cancelText}
+                  </button>
+                ) : null}
+
                 <button
                   onClick={handleConfirm}
                   className={[
-                    "flex-1 rounded-xl px-3 py-2 text-xs font-bold",
+                    cancelText ? "flex-1" : "w-full",
+                    "rounded-xl px-3 py-2 text-xs font-bold",
                     danger
                       ? "bg-red-500 text-white hover:bg-red-400"
                       : "bg-white text-neutral-950 hover:opacity-90",
@@ -203,17 +207,41 @@ export default function App() {
     }
 
     const auth = await api.authStatus();
+
+    const tryIdTokenLogin = async (): Promise<boolean> => {
+      if (!siteId) return false;
+      if (typeof webflow.getIdToken !== "function") return false;
+
+      try {
+        // Get a short-lived ID token (valid ~15 minutes) from the Designer.
+        const idToken = await webflow.getIdToken();
+        await api.idTokenLogin(siteId, idToken);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
     if (!auth || !auth.authenticated) {
-      setAuthGate({
-        status: "needs_auth",
-        siteId,
-        siteName,
-        workspaceId,
-        workspaceSlug,
-        message: "Authorize this app from your Webflow Workspace to continue.",
-      });
-      return;
+      // ✅ Cross-browser fix: if the site was already authorized once,
+      // silently restore the session using the Designer ID token.
+      const ok = await tryIdTokenLogin();
+      const auth2 = ok ? await api.authStatus() : auth;
+
+      if (!auth2 || !auth2.authenticated) {
+        setAuthGate({
+          status: "needs_auth",
+          siteId,
+          siteName,
+          workspaceId,
+          workspaceSlug,
+          message:
+            "Authorize this app once from your Webflow Workspace. After that, it will auto-login in other browsers too.",
+        });
+        return;
+      }
     }
+
 
     try {
       const { sites } = await api.sites();
@@ -223,6 +251,32 @@ export default function App() {
         !!siteId && authorizedSites.some((s) => String(s.id) === siteId);
 
       if (!siteAuthorized) {
+        // If user is already authorized for this site (from another browser),
+        // try to attach this site to the current session via ID token.
+        const ok = await tryIdTokenLogin();
+        if (ok) {
+          try {
+            const { sites: sites2 } = await api.sites();
+            const authorizedSites2 = Array.isArray(sites2) ? sites2 : [];
+            const siteAuthorized2 =
+              !!siteId && authorizedSites2.some((s) => String(s.id) === siteId);
+
+            if (siteAuthorized2) {
+              setAuthGate({
+                status: "ok",
+                siteId,
+                siteName,
+                workspaceId,
+                workspaceSlug,
+                authorizedSites: authorizedSites2,
+              });
+              return;
+            }
+          } catch {
+            // ignore
+          }
+        }
+
         setAuthGate({
           status: "needs_site",
           siteId,
@@ -231,7 +285,7 @@ export default function App() {
           workspaceSlug,
           authorizedSites,
           message:
-            "This site is not authorized yet. Authorize access to this site and then refresh here.",
+            "This site is not authorized yet. Authorize access to this site once, then it will work in any browser.",
         });
         return;
       }
@@ -304,6 +358,8 @@ export default function App() {
 
   const [confirmState, setConfirmState] = useState<ConfirmState>({ open: false, title: "" });
 
+  const [infoState, setInfoState] = useState<ConfirmState>({ open: false, title: "" });
+
   const scanTickRef = useRef<number | null>(null);
 
   const clearScanTick = useCallback(() => {
@@ -338,8 +394,17 @@ export default function App() {
 
     // UI tick
     scanTickRef.current = window.setInterval(() => {
-      setScanProgress((p) => (p >= 92 ? p : p + 1));
-    }, 180);
+      // Smooth progress (never "stuck" at 92). Cap at 99 until scan finishes.
+      setScanProgress((p) => {
+        const cur = Number(p) || 0;
+        if (cur >= 99) return cur;
+
+        // Speed curve: fast early, slower near the end.
+        const step = cur < 70 ? 1.2 : cur < 88 ? 0.8 : cur < 95 ? 0.4 : 0.2;
+        const next = cur + step;
+        return Math.min(99, next);
+      });
+    }, 160);
 
     const started = performance.now();
 
@@ -560,6 +625,8 @@ export default function App() {
 
       clearScanTick();
       updateProgress(100);
+      // Let the UI show 100% briefly before rendering results.
+      await new Promise((r) => setTimeout(r, 180));
 
       const ended = performance.now();
 
@@ -652,125 +719,151 @@ export default function App() {
 
 
   const performDelete = useCallback(async () => {
-  if (!scanResult) return;
-  const ids = Array.from(selectedIds);
-  if (ids.length === 0) return;
+    if (!scanResult) return;
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
 
-  setDeleting(true);
-  setDeleteProgress({ done: 0, total: ids.length });
-  setError(null);
+    setDeleting(true);
+    setDeleteProgress({ done: 0, total: ids.length });
+    setError(null);
 
-  const siteId = String(authGate.siteId || "").trim();
+    const siteId = String(authGate.siteId || "").trim();
 
-  const deleted = new Set<string>();
-  const failed: string[] = [];
+    const deleted = new Set<string>();
+    const failed: string[] = [];
 
-  let authFailed = false;
-  let scopeFailed = false;
+    let authFailed = false;
+    let scopeFailed = false;
 
-  const tryRemoveFromDesigner = async (assetMaybe: any, assetId: string): Promise<boolean> => {
-    let asset = assetMaybe;
+    const tryRemoveFromDesigner = async (assetMaybe: any, assetId: string): Promise<boolean> => {
+      let asset = assetMaybe;
 
-    if (!asset && typeof webflow.getAssetById === "function") {
-      try {
-        asset = await webflow.getAssetById(assetId);
-      } catch {
-        asset = null;
-      }
-    }
-
-    if (!asset) return true;
-
-    try {
-      if (typeof asset.remove === "function") {
-        await asset.remove();
-        return true;
-      }
-    } catch {}
-
-    try {
-      if (typeof webflow.removeAsset === "function") {
-        await webflow.removeAsset(asset);
-        return true;
-      }
-    } catch {}
-
-    return false;
-  };
-
-  try {
-    const assets = await webflow.getAllAssets?.().catch(() => []);
-    const list: any[] = Array.isArray(assets) ? assets : [];
-    const byId = new Map<string, any>(list.map((a: any) => [String(a.id), a]));
-
-    let done = 0;
-    for (const id of ids) {
-      const assetObj = byId.get(id);
-      let ok = false;
-
-      // 1) Primary: backend OAuth delete (removes from Webflow Assets too)
-      if (siteId) {
+      if (!asset && typeof webflow.getAssetById === "function") {
         try {
-          await api.deleteAsset(siteId, id);
-          ok = true;
-        } catch (e: any) {
-          const status = Number(e?.status || 0);
-          const msg = String(e?.message || "").toLowerCase();
-          if (status === 401) authFailed = true;
-          if (status === 403 || msg.includes("scope") || msg.includes("assets:write")) scopeFailed = true;
-          ok = false;
+          asset = await webflow.getAssetById(assetId);
+        } catch {
+          asset = null;
         }
       }
 
-      // 2) Best-effort: instantly update Assets panel UI in Designer
-      const designerOk = await tryRemoveFromDesigner(assetObj, id);
-      ok = ok || designerOk;
+      if (!asset) return true;
 
-      if (ok) deleted.add(id);
-      else failed.push(id);
+      try {
+        if (typeof asset.remove === "function") {
+          await asset.remove();
+          return true;
+        }
+      } catch {
+        // ignore
+      }
 
-      done++;
-      setDeleteProgress({ done, total: ids.length });
-    }
+      try {
+        if (typeof webflow.removeAsset === "function") {
+          await webflow.removeAsset(asset);
+          return true;
+        }
+      } catch {
+        // ignore
+      }
+
+      return false;
+    };
+
+    const nudgeDesignerAssetsRefresh = async () => {
+      try {
+        await new Promise((r) => setTimeout(r, 250));
+        await webflow.getAllAssets?.();
+        await new Promise((r) => setTimeout(r, 250));
+        await webflow.getAllAssets?.();
+      } catch {
+        // ignore
+      }
+    };
 
     try {
-      await webflow.getAllAssets?.();
-    } catch {}
+      const assets = await webflow.getAllAssets?.().catch(() => []);
+      const list: any[] = Array.isArray(assets) ? assets : [];
+      const byId = new Map<string, any>(list.map((a: any) => [String(a.id), a]));
 
-    setScanResult((prev) => {
-      if (!prev) return prev;
-      const nextImages = prev.images.filter((img) => !deleted.has(img.id));
-      return {
-        images: nextImages,
-        meta: {
-          ...prev.meta,
-          scannedAssets: Math.max(0, (prev.meta?.scannedAssets || 0) - deleted.size),
-        },
-      };
-    });
+      let done = 0;
+      for (const id of ids) {
+        const assetObj = byId.get(id);
+        let ok = false;
 
-    setSelectedIds(new Set());
+        // 1) Primary: backend OAuth delete (removes from Webflow Assets panel too)
+        if (siteId) {
+          try {
+            await api.deleteAsset(siteId, id);
+            ok = true;
+          } catch (e: any) {
+            const status = Number(e?.status || 0);
+            const msg = String(e?.message || "").toLowerCase();
+            if (status === 401) authFailed = true;
+            if (status === 403 || msg.includes("scope") || msg.includes("assets:write")) scopeFailed = true;
+            ok = false;
+          }
+        }
 
-    const remainingUnused = (scanResult.images || []).filter(
-      (img) => img.isUnused && !deleted.has(img.id)
-    ).length;
+        // 2) Best-effort: instantly update Assets panel UI in Designer
+        const designerOk = await tryRemoveFromDesigner(assetObj, id);
+        ok = ok || designerOk;
 
-    setScreen(remainingUnused === 0 ? "success" : "results");
+        if (ok) deleted.add(id);
+        else failed.push(id);
 
-    if (failed.length > 0) {
-      let msg = `Could not delete ${failed.length} image${failed.length > 1 ? "s" : ""}. They are still listed.`;
-      if (authFailed) {
-        msg += "\n\nAuth issue: Please click Authorize again (or Logout → Authorize), then Refresh, and try deleting again.";
-      } else if (scopeFailed) {
-        msg += "\n\nPermission issue: Your token may not have assets:write scope. Please re-authorize the app in Webflow and grant Assets write access.";
+        done++;
+        setDeleteProgress({ done, total: ids.length });
       }
-      setError(msg);
+
+      await nudgeDesignerAssetsRefresh();
+
+      // IMPORTANT: Do NOT rescan automatically. Just remove the deleted assets from the current list.
+      setScanResult((prev) => {
+        if (!prev) return prev;
+        const nextImages = prev.images.filter((img) => !deleted.has(img.id));
+        return {
+          images: nextImages,
+          meta: {
+            ...prev.meta,
+            scannedAssets: Math.max(0, (prev.meta?.scannedAssets || 0) - deleted.size),
+          },
+        };
+      });
+
+      setSelectedIds(new Set());
+
+      const remainingUnused = (scanResult.images || []).filter(
+        (img) => img.isUnused && !deleted.has(img.id)
+      ).length;
+
+      setScreen(remainingUnused === 0 ? "success" : "results");
+
+      // ✅ Popup: tell user to refresh to see panel update
+      if (deleted.size > 0) {
+        setInfoState({
+          open: true,
+          title: "Update",
+          body: "Images are deleted from the app.\n\nAssets panel me update dekhne ke liye Webflow Designer ko refresh (reload) karna padega.",
+          confirmText: "Okay",
+          cancelText: "",
+          danger: false,
+        });
+      }
+
+      if (failed.length > 0) {
+        let msg = `Could not delete ${failed.length} image${failed.length > 1 ? "s" : ""}. They are still listed.`;
+        if (authFailed) {
+          msg += "\n\nAuth issue: Please click Authorize again (or Logout → Authorize), then Refresh, and try deleting again.";
+        } else if (scopeFailed) {
+          msg += "\n\nPermission issue: Your token may not have assets:write scope. Please re-authorize the app and grant Assets write access.";
+        }
+        setError(msg);
+      }
+    } finally {
+      setDeleting(false);
+      setDeleteProgress(null);
     }
-  } finally {
-    setDeleting(false);
-    setDeleteProgress(null);
-  }
-}, [authGate.siteId, scanResult, selectedIds]);
+  }, [authGate.siteId, scanResult, selectedIds]);
 
 
 
@@ -836,7 +929,7 @@ export default function App() {
       <div className="min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden">
         <div className="p-4">
           <div>
-            <h1 className="text-xl font-bold tracking-tight">Bulk Image Cleaner </h1>
+            <h1 className="text-xl font-bold tracking-tight">Bulk Image Cleaner</h1>
             <p className="mt-1 text-xs text-neutral-400">
               {authGate.siteName ? `Site: ${authGate.siteName}` : "Open this extension inside Webflow Designer"}
             </p>
@@ -1052,6 +1145,11 @@ export default function App() {
         onClose={() => setConfirmState((s) => ({ ...s, open: false }))}
       />
 
+      <ConfirmModal
+        state={infoState}
+        onClose={() => setInfoState((s) => ({ ...s, open: false }))}
+      />
+
       <div className="p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -1094,84 +1192,82 @@ export default function App() {
           </div>
         )}
 
-       <div className="mt-3 rounded-2xl border border-neutral-800 overflow-hidden">
-  {/* Sticky header (scroll karte time bhi upar rahega) */}
-  <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[10px] uppercase tracking-wide text-neutral-400 bg-neutral-900/60 sticky top-0 z-10">
-    <div className="col-span-1"> </div>
-    <div className="col-span-5">Image Name</div>
-    <div className="col-span-4">Image ID</div>
-    <div className="col-span-2 text-right">Status</div>
-  </div>
-
-  {/* ✅ Scrollable body */}
-  <div className="max-h-[60vh] overflow-y-auto">
-    {unusedImages.length === 0 ? (
-      <div className="px-3 py-10 text-center">
-        <div className="text-sm text-neutral-200">
-          {query.trim() ? "No unused images match your search." : "No unused images found"}
-        </div>
-        {!query.trim() && (
-          <div className="mt-1 text-xs text-neutral-400">
-            Your project is already clean. All images are currently in use.
+        <div className="mt-3 rounded-2xl border border-neutral-800 overflow-hidden">
+          {/* Sticky header */}
+          <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[10px] uppercase tracking-wide text-neutral-400 bg-neutral-900/60 sticky top-0 z-10">
+            <div className="col-span-1"> </div>
+            <div className="col-span-5">Image Name</div>
+            <div className="col-span-4">Image ID</div>
+            <div className="col-span-2 text-right">Status</div>
           </div>
-        )}
-        <div className="mt-4 flex justify-center">
-          <GhostButton onClick={() => setScreen("success")}>View Clean State</GhostButton>
-        </div>
-      </div>
-    ) : (
-      <div className="divide-y divide-neutral-800">
-        {unusedImages.map((img) => {
-          const checked = selectedIds.has(img.id);
-          return (
-            <div
-              key={img.id}
-              className="grid grid-cols-12 gap-2 px-3 py-2 items-center hover:bg-neutral-900/40"
-            >
-              <div className="col-span-1">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => toggle(img.id)}
-                  className="accent-white"
-                />
-              </div>
 
-              <div className="col-span-5 min-w-0">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="h-8 w-10 rounded-md overflow-hidden bg-neutral-900 border border-neutral-800 shrink-0">
-                    {img.url ? (
-                      <img
-                        src={img.url}
-                        alt={img.name}
-                        className="h-full w-full object-cover"
-                        loading="lazy"
-                      />
-                    ) : null}
+          {/* Scrollable body */}
+          <div className="max-h-[60vh] overflow-y-auto">
+            {unusedImages.length === 0 ? (
+              <div className="px-3 py-10 text-center">
+                <div className="text-sm text-neutral-200">
+                  {query.trim() ? "No unused images match your search." : "No unused images found"}
+                </div>
+                {!query.trim() && (
+                  <div className="mt-1 text-xs text-neutral-400">
+                    Your project is already clean. All images are currently in use.
                   </div>
-                  <div className="min-w-0">
-                    <div className="text-xs font-semibold text-neutral-100 truncate">{img.name}</div>
-                    <div className="text-[10px] text-neutral-500 truncate">
-                      {img.mimeType || "image"}
-                    </div>
-                  </div>
+                )}
+                <div className="mt-4 flex justify-center">
+                  <GhostButton onClick={() => setScreen("success")}>View Clean State</GhostButton>
                 </div>
               </div>
+            ) : (
+              <div className="divide-y divide-neutral-800">
+                {unusedImages.map((img) => {
+                  const checked = selectedIds.has(img.id);
+                  return (
+                    <div
+                      key={img.id}
+                      className="grid grid-cols-12 gap-2 px-3 py-2 items-center hover:bg-neutral-900/40"
+                    >
+                      <div className="col-span-1">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggle(img.id)}
+                          className="accent-white"
+                        />
+                      </div>
 
-              <div className="col-span-4 min-w-0">
-                <div className="text-[11px] text-neutral-300 truncate">{img.id}</div>
-              </div>
+                      <div className="col-span-5 min-w-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="h-8 w-10 rounded-md overflow-hidden bg-neutral-900 border border-neutral-800 shrink-0">
+                            {img.url ? (
+                              <img
+                                src={img.url}
+                                alt={img.name}
+                                className="h-full w-full object-cover"
+                                loading="lazy"
+                              />
+                            ) : null}
+                          </div>
+                          <div className="min-w-0">
+                            <div className="text-xs font-semibold text-neutral-100 truncate">{img.name}</div>
+                            <div className="text-[10px] text-neutral-500 truncate">{img.mimeType || "image"}</div>
+                          </div>
+                        </div>
+                      </div>
 
-              <div className="col-span-2 text-right">
-                <Pill>Unused</Pill>
+                      <div className="col-span-4 min-w-0">
+                        <div className="text-[11px] text-neutral-300 truncate">{img.id}</div>
+                      </div>
+
+                      <div className="col-span-2 text-right">
+                        <Pill>Unused</Pill>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
-            </div>
-          );
-        })}
-      </div>
-    )}
-  </div>
-</div>
+            )}
+          </div>
+        </div>
 
         {deleteProgress && (
           <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-900/50 p-3">

@@ -12,7 +12,8 @@ export class WebflowError extends Error {
 export function isWebflowError(e) {
     return e instanceof WebflowError || (e && typeof e.status === "number" && e.body);
 }
-const API = "https://api.webflow.com/v2";
+const API_V2 = "https://api.webflow.com/v2";
+const API_BETA = "https://api.webflow.com/beta";
 function normalizeScopes(raw) {
     return raw
         .split(/[\s,]+/)
@@ -41,7 +42,7 @@ export function authorizeUrl(opts = {}) {
     const clientId = String(process.env.WEBFLOW_CLIENT_ID || "");
     const redirectUri = String(process.env.WEBFLOW_REDIRECT_URI || "");
     // Default scopes for this app.
-    // See Webflow scope list: sites/assets are separate permissions.
+    // NOTE: assets delete requires assets:write.
     const REQUIRED_SCOPES = "sites:read,authorized_user:read,assets:read,assets:write";
     const merged = mergeScopes(REQUIRED_SCOPES, process.env.WEBFLOW_SCOPES);
     const scope = normalizeScopes(merged);
@@ -75,8 +76,8 @@ export async function exchangeCodeForToken(code) {
     }
     return { accessToken: data.access_token, scope: data.scope };
 }
-async function wf(accessToken, path, init = {}) {
-    const res = await fetch(`${API}${path}`, {
+async function wf(base, accessToken, path, init = {}) {
+    const res = await fetch(`${base}${path}`, {
         ...init,
         headers: {
             Accept: "application/json",
@@ -93,16 +94,23 @@ async function wf(accessToken, path, init = {}) {
 }
 export const webflowApi = {
     token: {
-        authorizedBy: (token) => wf(token, "/token/authorized_by"),
-        introspect: (token) => wf(token, "/token/introspect"),
+        authorizedBy: (token) => wf(API_V2, token, "/token/authorized_by"),
+        introspect: (token) => wf(API_V2, token, "/token/introspect"),
+        // Verifies and decodes a Designer Extension ID token.
+        // Docs: Designer API webflow.getIdToken() -> resolve via /beta/token/resolve
+        resolveIdToken: (token, idToken) => wf(API_BETA, token, "/token/resolve", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ idToken }),
+        }),
     },
     sites: {
-        list: (token) => wf(token, "/sites"),
+        list: (token) => wf(API_V2, token, "/sites"),
     },
     assets: {
         // Webflow Data API v2: DELETE /v2/assets/:asset_id
         // Required scope: assets:write
-        delete: (token, assetId) => wf(token, `/assets/${encodeURIComponent(assetId)}`, {
+        delete: (token, assetId) => wf(API_V2, token, `/assets/${encodeURIComponent(assetId)}`, {
             method: "DELETE",
         }),
     },

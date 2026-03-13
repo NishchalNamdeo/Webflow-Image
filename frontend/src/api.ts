@@ -48,7 +48,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       if (j && typeof j === "object" && typeof (j as any).message === "string") {
         msg = (j as any).message;
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
     throw new ApiError(res.status, msg);
   }
 
@@ -70,6 +72,7 @@ export type SiteInfoSummary = {
 
 export type SiteListResponse = { sites: SiteInfoSummary[] };
 export type DeleteAssetResponse = {};
+export type IdTokenLoginResponse = { authenticated: boolean };
 
 export const api = {
   authStatus: async (): Promise<AuthStatus | null> => {
@@ -78,6 +81,15 @@ export const api = {
     } catch {
       return null;
     }
+  },
+
+  // Cross-browser login (Safari/Chrome) using Designer ID token.
+  idTokenLogin: async (siteId: string, idToken: string): Promise<IdTokenLoginResponse> => {
+    return await request<IdTokenLoginResponse>("/api/id-token/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ siteId, idToken }),
+    });
   },
 
   sites: async (): Promise<SiteListResponse> => {

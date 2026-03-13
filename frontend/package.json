@@ -3,12 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "concurrently \"webflow extension serve\" \"npm run watch-webpack\" \"npm run watch-css\"",
+    "dev": "node ./node_modules/concurrently/dist/bin/concurrently.js \"webflow extension serve\" \"npm run watch-webpack\" \"npm run watch-css\"",
     "build": "npm run build-webpack && npm run build-css && webflow extension bundle",
-    "watch-webpack": "webpack --config webpack.config.mjs --mode development --watch",
-    "build-webpack": "webpack --config webpack.config.mjs --mode production",
-    "watch-css": "tailwindcss -i ./src/input.css -o ./public/output.css --watch",
-    "build-css": "tailwindcss -i ./src/input.css -o ./public/output.css"
+    "watch-webpack": "node ./node_modules/webpack/bin/webpack.js --config webpack.config.mjs --mode development --watch",
+    "build-webpack": "node ./node_modules/webpack/bin/webpack.js --config webpack.config.mjs --mode production",
+    "watch-css": "node ./node_modules/@tailwindcss/cli/dist/index.mjs -i ./src/input.css -o ./public/output.css --watch",
+    "build-css": "node ./node_modules/@tailwindcss/cli/dist/index.mjs -i ./src/input.css -o ./public/output.css"
   },
   "dependencies": {
     "@tailwindcss/cli": "^4.1.18",

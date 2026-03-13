@@ -12,6 +12,7 @@ import {
   isWebflowError,
   WebflowError,
 } from "./webflow.js";
+import { getSiteAuth, listAuthorizedSiteIds, upsertSiteAuth } from "./siteAuthStore.js";
 
 const asyncRoute =
   (
@@ -213,10 +214,11 @@ function requireAuth(req: Request, res: Response, next: NextFunction)  {
   next();
 }
 
+
 function getAccessTokenForSite(req: Request, siteId: string): string {
   const map = ensureAuthorizedSites(req);
   const entry = map[String(siteId || "").trim()];
-  const token = String(entry?.accessToken || req.session?.accessToken || "").trim();
+  const token = String(entry?.accessToken || (req.session as any)?.accessToken || "").trim();
   return token;
 }
 
@@ -344,6 +346,13 @@ app.get(
         siteName: idToName[siteId],
         lastSeenAt: now,
       });
+
+      // Persist authorization so other browsers (Safari/Chrome etc.) can auto-login via ID token.
+      await upsertSiteAuth(siteId, {
+        accessToken: token.accessToken,
+        scopes: token.scope,
+        siteName: idToName[siteId],
+      });
     }
 
     await new Promise<void>((resolve, reject) =>
@@ -364,6 +373,79 @@ app.get("/api/auth/status", (req: Request, res: Response) => {
     authorizedSitesCount: Object.keys(map).length,
     siteIds: Object.keys(map),
   });
+
+
+// Auto-login for other browsers using Webflow Designer ID token.
+// Flow:
+// 1) User authorizes app once (OAuth) -> we persist site access token.
+// 2) In any browser, extension calls webflow.getIdToken() and POSTs it here.
+// 3) Backend verifies token via Webflow /beta/token/resolve and restores session.
+app.post(
+  "/api/id-token/login",
+  asyncRoute(async (req: Request, res: Response) => {
+    const siteId = String((req.body as any)?.siteId || "").trim();
+    const idToken = String((req.body as any)?.idToken || "").trim();
+
+    if (!siteId || !idToken) {
+      return res.status(400).json({ message: "Missing siteId or idToken" });
+    }
+
+    const rec = await getSiteAuth(siteId);
+    if (!rec) {
+      return res.status(403).json({
+        message:
+          "This site is not authorized on the server yet. Please authorize once (open /auth) and then try again.",
+      });
+    }
+
+    // Verify & decode the ID token using Webflow API
+    const { data: user } = await webflowApi.token.resolveIdToken(rec.accessToken, idToken);
+
+    const resolvedSiteId = String((user as any)?.siteId || "").trim();
+    if (resolvedSiteId && resolvedSiteId !== siteId) {
+      return res.status(401).json({ message: "ID token does not match this site" });
+    }
+
+    // Restore session
+    (req.session as any).accessToken = rec.accessToken;
+    (req.session as any).scopes = rec.scopes;
+
+    const now = Date.now();
+
+    // Add the current site
+    upsertAuthorizedSite(req, siteId, {
+      accessToken: rec.accessToken,
+      scopes: rec.scopes,
+      siteName: rec.siteName,
+      lastSeenAt: now,
+    });
+
+    // Best-effort: also attach other persisted sites to this session
+    try {
+      const ids = await listAuthorizedSiteIds();
+      for (const sid of ids) {
+        if (!sid || sid === siteId) continue;
+        const r = await getSiteAuth(sid);
+        if (!r?.accessToken) continue;
+        upsertAuthorizedSite(req, sid, {
+          accessToken: r.accessToken,
+          scopes: r.scopes,
+          siteName: r.siteName,
+          lastSeenAt: now,
+        });
+      }
+    } catch {
+      // ignore
+    }
+
+    await new Promise<void>((resolve, reject) =>
+      req.session.save((err) => (err ? reject(err) : resolve()))
+    );
+
+    return res.json({ authenticated: true });
+  })
+);
+
 });
 
 app.get(
