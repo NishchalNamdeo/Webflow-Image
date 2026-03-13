@@ -12,6 +12,7 @@ import {
   isWebflowError,
   WebflowError,
 } from "./webflow.js";
+import { createTokenStore, type StoredToken } from "./tokenStore.js";
 
 const asyncRoute =
   (
@@ -125,11 +126,19 @@ const defaultSameSite: "lax" | "none" =
   cookieSecureSetting === true ? "none" : "lax";
 
 let redisStore: any = undefined;
+let redisClient: ReturnType<typeof createClient> | null = null;
 if (config.redisUrl) {
-  const redisClient = createClient({ url: config.redisUrl });
+  redisClient = createClient({ url: config.redisUrl });
   redisClient.connect().catch((e) => console.error("Redis connect error", e));
   redisStore = new RedisStore({ client: redisClient, prefix: "bulk_image_cleaner:" });
 }
+
+// Token store: enables cross-browser use after ONE OAuth authorize.
+// - Uses Redis when available.
+// - Falls back to a local file store in ./data/token-store.json.
+const tokenStorePromise = createTokenStore({
+  redis: (redisClient as any) || null,
+});
 
 app.use(
   session({
@@ -211,13 +220,6 @@ function requireAuth(req: Request, res: Response, next: NextFunction)  {
     return res.status(401).json({ message: "Not authenticated" });
   }
   next();
-}
-
-function getAccessTokenForSite(req: Request, siteId: string): string {
-  const map = ensureAuthorizedSites(req);
-  const entry = map[String(siteId || "").trim()];
-  const token = String(entry?.accessToken || req.session?.accessToken || "").trim();
-  return token;
 }
 
 type AuthorizedSite = {
@@ -346,6 +348,39 @@ app.get(
       });
     }
 
+    // Persist tokens for cross-browser usage.
+    // After one OAuth authorize, the frontend can "bootstrap" a fresh session
+    // by sending a short-lived Webflow ID token.
+    try {
+      const store = await tokenStorePromise;
+
+      let userId = "";
+      try {
+        const me = await webflowApi.token.authorizedBy(token.accessToken);
+        userId = String((me as any)?.data?.id || (me as any)?.data?.user?.id || "");
+      } catch {
+        userId = "";
+      }
+
+      for (const siteId of siteIds) {
+        const entry: StoredToken = {
+          siteId,
+          siteName: idToName[siteId],
+          userId: userId || undefined,
+          accessToken: token.accessToken,
+          scope: token.scope,
+          createdAt: now,
+          updatedAt: now,
+        };
+        await store.setResolverToken(siteId, entry);
+        if (userId) {
+          await store.setUserSiteToken(userId, siteId, entry);
+        }
+      }
+    } catch (e) {
+      console.warn("Token store persist failed", e);
+    }
+
     await new Promise<void>((resolve, reject) =>
       req.session.save((err) => (err ? reject(err) : resolve()))
     );
@@ -377,6 +412,67 @@ app.get(
   })
 );
 
+// Cross-browser session bootstrap.
+// If a user has already OAuth-authorized once, we store tokens server-side.
+// When opening the extension in a different browser, the frontend can send a short-lived
+// Webflow ID token + siteId to rebuild the session without requiring OAuth again.
+app.post(
+  "/api/bootstrap",
+  asyncRoute(async (req: Request, res: Response) => {
+    const siteId = String(req.body?.siteId || "").trim();
+    const idToken = String(req.body?.idToken || req.header("X-Webflow-Id-Token") || "").trim();
+
+    if (!siteId || !idToken) {
+      return res.status(400).json({ authenticated: false, message: "Missing siteId or idToken" });
+    }
+
+    const store = await tokenStorePromise;
+    const resolver = await store.getResolverToken(siteId);
+    if (!resolver) {
+      return res.status(401).json({ authenticated: false, message: "Site not authorized yet" });
+    }
+
+    const resolved = await webflowApi.token.resolveIdToken(resolver.accessToken, idToken);
+    const resolvedSiteId = String((resolved as any)?.data?.siteId || "").trim();
+    const userId = String((resolved as any)?.data?.id || "").trim();
+
+    if (!resolvedSiteId || resolvedSiteId !== siteId) {
+      return res.status(403).json({ authenticated: false, message: "ID token site mismatch" });
+    }
+
+    if (!userId) {
+      return res.status(403).json({ authenticated: false, message: "Unable to resolve user" });
+    }
+
+    const userToken = await store.getUserSiteToken(userId, siteId);
+    if (!userToken) {
+      return res.status(401).json({ authenticated: false, message: "User has not authorized this site" });
+    }
+
+    // Restore session
+    req.session.accessToken = userToken.accessToken;
+    req.session.scopes = userToken.scope || req.session.scopes;
+    const now = Date.now();
+    upsertAuthorizedSite(req, siteId, {
+      accessToken: userToken.accessToken,
+      scopes: userToken.scope || "",
+      siteName: userToken.siteName,
+      lastSeenAt: now,
+    });
+
+    await new Promise<void>((resolve, reject) =>
+      req.session.save((err) => (err ? reject(err) : resolve()))
+    );
+
+    const map = ensureAuthorizedSites(req);
+    return res.json({
+      authenticated: true,
+      authorizedSitesCount: Object.keys(map).length,
+      siteIds: Object.keys(map),
+    });
+  })
+);
+
 app.get("/api/sites", requireAuth, (req: Request, res: Response) => {
   const map = ensureAuthorizedSites(req);
   const sites = Object.keys(map)
@@ -390,32 +486,6 @@ app.get("/api/sites", requireAuth, (req: Request, res: Response) => {
     );
   res.json({ sites });
 });
-
-// Delete an asset (image) from Webflow so it disappears from the Assets panel too.
-// Frontend sends the current Designer siteId so we can validate authorization.
-app.delete(
-  "/api/sites/:siteId/assets/:assetId",
-  requireAuth,
-  asyncRoute(async (req: Request, res: Response) => {
-    const siteId = String(req.params.siteId || "").trim();
-    const assetId = String(req.params.assetId || "").trim();
-
-    if (!siteId || !assetId) {
-      return res.status(400).json({ message: "Missing siteId or assetId" });
-    }
-
-    const authorizedSites = ensureAuthorizedSites(req);
-    if (!authorizedSites[siteId]) {
-      return res.status(403).json({ message: "Site is not authorized for this session" });
-    }
-
-    const token = getAccessTokenForSite(req, siteId);
-    if (!token) return res.status(401).json({ message: "Not authenticated" });
-
-    await webflowApi.assets.delete(token, assetId);
-    return res.status(204).send();
-  })
-);
 
 app.post("/api/logout", (req: Request, res: Response) => {
   req.session.destroy(() => {

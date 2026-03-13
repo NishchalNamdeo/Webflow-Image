@@ -85,9 +85,9 @@ const ConfirmModal: React.FC<{
   return (
     <div className="absolute inset-0 z-50 bg-black/50" onClick={onClose}>
       <div className="p-4" onClick={(e) => e.stopPropagation()}>
-        <div className="rounded-2xl border border-neutral-800 bg-neutral-950 shadow-xl p-4">
+        <div className="rounded-2xl border border-brand-rose/40 bg-brand-cream shadow-xl p-4 text-brand-wine">
           <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-full bg-red-500/10 border border-red-500/20">
+            <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-full bg-brand-red/10 border border-brand-red/30 text-brand-wine">
               <svg
                 width="18"
                 height="18"
@@ -117,14 +117,14 @@ const ConfirmModal: React.FC<{
             </div>
 
             <div className="min-w-0">
-              <div className="text-sm font-semibold text-neutral-100">{title}</div>
+              <div className="text-sm font-semibold text-brand-wine">{title}</div>
               {body && (
-                <div className="mt-1 whitespace-pre-line text-xs text-neutral-400 leading-relaxed">{body}</div>
+                <div className="mt-1 whitespace-pre-line text-xs text-brand-wine/80 leading-relaxed">{body}</div>
               )}
               <div className="mt-4 flex gap-2">
                 <button
                   onClick={onClose}
-                  className="flex-1 rounded-xl border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs font-medium text-neutral-200 hover:bg-neutral-800"
+                  className="flex-1 rounded-xl border border-brand-rose/40 bg-white/70 px-3 py-2 text-xs font-semibold text-brand-wine hover:bg-white"
                 >
                   {cancelText}
                 </button>
@@ -133,8 +133,8 @@ const ConfirmModal: React.FC<{
                   className={[
                     "flex-1 rounded-xl px-3 py-2 text-xs font-bold",
                     danger
-                      ? "bg-red-500 text-white hover:bg-red-400"
-                      : "bg-white text-neutral-950 hover:opacity-90",
+                      ? "bg-brand-red text-brand-cream hover:bg-brand-wine"
+                      : "bg-brand-wine text-brand-cream hover:opacity-90",
                   ].join(" ")}
                 >
                   {confirmText}
@@ -151,14 +151,14 @@ const ConfirmModal: React.FC<{
 const ProgressBar: React.FC<{ value: number }> = ({ value }) => {
   const v = Math.max(0, Math.min(100, Math.round(value)));
   return (
-    <div className="h-2 rounded-full bg-neutral-900 overflow-hidden border border-neutral-800">
-      <div className="h-full bg-white" style={{ width: `${v}%` }} />
+    <div className="h-2 rounded-full bg-white/70 overflow-hidden border border-brand-rose/30">
+      <div className="h-full bg-brand-red" style={{ width: `${v}%` }} />
     </div>
   );
 };
 
 const Pill: React.FC<React.PropsWithChildren> = ({ children }) => (
-  <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-400/10 text-emerald-200 border border-emerald-400/20">
+  <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold bg-brand-rose/20 text-brand-wine border border-brand-rose/40">
     {children}
   </span>
 );
@@ -202,7 +202,23 @@ export default function App() {
       return;
     }
 
-    const auth = await api.authStatus();
+    // 1) Check cookie/session auth first.
+    let auth = await api.authStatus();
+
+    // 2) If this browser has no session, try to "bootstrap" using Webflow's short-lived ID token.
+    //    This enables cross-browser usage after ONE OAuth authorize (token stored on the backend).
+    if ((!auth || !auth.authenticated) && siteId) {
+      try {
+        const idToken = (await webflow.getIdToken?.()) as string | undefined;
+        if (idToken) {
+          await api.bootstrap({ siteId, idToken });
+          auth = await api.authStatus();
+        }
+      } catch {
+        // ignore; we'll show needs_auth below
+      }
+    }
+
     if (!auth || !auth.authenticated) {
       setAuthGate({
         status: "needs_auth",
@@ -210,7 +226,8 @@ export default function App() {
         siteName,
         workspaceId,
         workspaceSlug,
-        message: "Authorize this app from your Webflow Workspace to continue.",
+        message:
+          "Authorize this app once from your Webflow Workspace. After that, it should work in other browsers too.",
       });
       return;
     }
@@ -305,6 +322,7 @@ export default function App() {
   const [confirmState, setConfirmState] = useState<ConfirmState>({ open: false, title: "" });
 
   const scanTickRef = useRef<number | null>(null);
+  const scanTargetRef = useRef(0);
 
   const clearScanTick = useCallback(() => {
     if (scanTickRef.current !== null) {
@@ -319,12 +337,26 @@ export default function App() {
     setQuery("");
     setSelectedIds(new Set());
     setScanProgress(0);
+    scanTargetRef.current = 0;
     setScanStep("");
     setScreen("intro");
   }, []);
 
+  const startScanTick = useCallback(() => {
+    clearScanTick();
+    scanTickRef.current = window.setInterval(() => {
+      setScanProgress((p) => {
+        const t = scanTargetRef.current;
+        if (p >= t) return p;
+        // Smoothly approach target (fast at first, slow near the end)
+        const step = Math.max(0.6, (t - p) * 0.18);
+        return Math.min(t, p + step);
+      });
+    }, 110);
+  }, [clearScanTick]);
+
   const updateProgress = useCallback((v: number) => {
-    setScanProgress((prev) => Math.max(prev, Math.min(100, v)));
+    scanTargetRef.current = Math.max(scanTargetRef.current, Math.min(100, v));
   }, []);
 
   const runScan = useCallback(async () => {
@@ -336,10 +368,8 @@ export default function App() {
     setScreen("scanning");
     setScanProgress(0);
 
-    // UI tick
-    scanTickRef.current = window.setInterval(() => {
-      setScanProgress((p) => (p >= 92 ? p : p + 1));
-    }, 180);
+    scanTargetRef.current = 0;
+    startScanTick();
 
     const started = performance.now();
 
@@ -351,7 +381,7 @@ export default function App() {
       }
 
       setScanStep("Checking assets…");
-      updateProgress(10);
+      updateProgress(6);
 
       if (typeof webflow.getAllAssets !== "function") {
         throw new Error("This Webflow environment does not expose assets API (getAllAssets).");
@@ -359,6 +389,9 @@ export default function App() {
 
       const assets = await webflow.getAllAssets();
       const allAssets: any[] = Array.isArray(assets) ? assets : [];
+
+      // Smooth progress while we normalize/filter assets (this prevents the bar from getting stuck at ~92%)
+      updateProgress(12);
 
       type ImgInternal = {
         id: string;
@@ -371,7 +404,8 @@ export default function App() {
 
       const images: ImgInternal[] = [];
 
-      for (const asset of allAssets) {
+      for (let idx = 0; idx < allAssets.length; idx++) {
+        const asset = allAssets[idx];
         let mimeType = "";
         try {
           mimeType = (await asset.getMimeType?.()) || "";
@@ -401,6 +435,11 @@ export default function App() {
           assetObj: asset,
           used: false,
         });
+
+        if (allAssets.length > 0 && idx % 25 === 0) {
+          // 12% -> 20% while iterating assets
+          updateProgress(12 + Math.round(((idx + 1) / allAssets.length) * 8));
+        }
       }
 
       const imageById = new Map<string, ImgInternal>();
@@ -418,7 +457,7 @@ export default function App() {
       const pages: any[] = (items ?? []).filter((i: any) => i?.type === "Page");
       const totalPages = pages.length;
 
-      updateProgress(28);
+      updateProgress(22);
 
       // element scan
       setScanStep("Checking elements…");
@@ -533,7 +572,8 @@ export default function App() {
         }
 
         if (totalPages > 0) {
-          const pct = 28 + Math.round(((i + 1) / totalPages) * 50);
+          // 22% -> 80% while scanning pages/elements
+          const pct = 22 + Math.round(((i + 1) / totalPages) * 58);
           updateProgress(pct);
         }
       }
@@ -554,12 +594,13 @@ export default function App() {
             batch.map((s: any) => s.getProperties?.().catch(() => null))
           );
           for (const props of propsList) scanStylePayload(props);
-          updateProgress(82 + Math.round(((i + BATCH) / Math.max(1, styles.length)) * 15));
+          updateProgress(82 + Math.round(((i + BATCH) / Math.max(1, styles.length)) * 16));
         }
       }
 
       clearScanTick();
       updateProgress(100);
+      setScanProgress(100);
 
       const ended = performance.now();
 
@@ -590,11 +631,12 @@ export default function App() {
     } catch (e: any) {
       clearScanTick();
       setScanProgress(0);
+      scanTargetRef.current = 0;
       setScanStep("");
       setError(e?.message || "Scan failed");
       setScreen("intro");
     }
-  }, [clearScanTick, updateProgress]);
+  }, [clearScanTick, startScanTick, updateProgress]);
 
   const unusedImages = useMemo(() => {
     const base = (scanResult?.images || []).filter((i) => i.isUnused);
@@ -652,125 +694,83 @@ export default function App() {
 
 
   const performDelete = useCallback(async () => {
-  if (!scanResult) return;
-  const ids = Array.from(selectedIds);
-  if (ids.length === 0) return;
+    if (!scanResult) return;
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
 
-  setDeleting(true);
-  setDeleteProgress({ done: 0, total: ids.length });
-  setError(null);
+    setDeleting(true);
+    setDeleteProgress({ done: 0, total: ids.length });
+    setError(null);
 
-  const siteId = String(authGate.siteId || "").trim();
-
-  const deleted = new Set<string>();
-  const failed: string[] = [];
-
-  let authFailed = false;
-  let scopeFailed = false;
-
-  const tryRemoveFromDesigner = async (assetMaybe: any, assetId: string): Promise<boolean> => {
-    let asset = assetMaybe;
-
-    if (!asset && typeof webflow.getAssetById === "function") {
-      try {
-        asset = await webflow.getAssetById(assetId);
-      } catch {
-        asset = null;
-      }
-    }
-
-    if (!asset) return true;
+    const deleted = new Set<string>();
+    const failed: string[] = [];
 
     try {
-      if (typeof asset.remove === "function") {
-        await asset.remove();
-        return true;
-      }
-    } catch {}
+      const assets = await webflow.getAllAssets?.();
+      const list: any[] = Array.isArray(assets) ? assets : [];
+      const byId = new Map<string, any>(list.map((a: any) => [String(a.id), a]));
 
-    try {
-      if (typeof webflow.removeAsset === "function") {
-        await webflow.removeAsset(asset);
-        return true;
-      }
-    } catch {}
+      let done = 0;
+      for (const id of ids) {
+        const asset = byId.get(id);
 
-    return false;
-  };
+        let ok = false;
 
-  try {
-    const assets = await webflow.getAllAssets?.().catch(() => []);
-    const list: any[] = Array.isArray(assets) ? assets : [];
-    const byId = new Map<string, any>(list.map((a: any) => [String(a.id), a]));
-
-    let done = 0;
-    for (const id of ids) {
-      const assetObj = byId.get(id);
-      let ok = false;
-
-      // 1) Primary: backend OAuth delete (removes from Webflow Assets too)
-      if (siteId) {
-        try {
-          await api.deleteAsset(siteId, id);
+        // If the asset is already missing from the Asset panel, treat as deleted.
+        if (!asset) {
           ok = true;
-        } catch (e: any) {
-          const status = Number(e?.status || 0);
-          const msg = String(e?.message || "").toLowerCase();
-          if (status === 401) authFailed = true;
-          if (status === 403 || msg.includes("scope") || msg.includes("assets:write")) scopeFailed = true;
-          ok = false;
+        } else {
+          try {
+            if (typeof asset.remove === "function") {
+              await asset.remove();
+              ok = true;
+            } else if (typeof webflow.removeAsset === "function") {
+              await webflow.removeAsset(asset);
+              ok = true;
+            }
+          } catch {
+            ok = false;
+          }
         }
+
+        if (ok) deleted.add(id);
+        else failed.push(id);
+
+        done++;
+        setDeleteProgress({ done, total: ids.length });
       }
 
-      // 2) Best-effort: instantly update Assets panel UI in Designer
-      const designerOk = await tryRemoveFromDesigner(assetObj, id);
-      ok = ok || designerOk;
+      // IMPORTANT: Do NOT rescan automatically. Just remove the deleted assets from the current list.
+      setScanResult((prev) => {
+        if (!prev) return prev;
+        const nextImages = prev.images.filter((img) => !deleted.has(img.id));
+        return {
+          images: nextImages,
+          meta: {
+            ...prev.meta,
+            scannedAssets: Math.max(0, (prev.meta?.scannedAssets || 0) - deleted.size),
+          },
+        };
+      });
 
-      if (ok) deleted.add(id);
-      else failed.push(id);
+      setSelectedIds(new Set());
 
-      done++;
-      setDeleteProgress({ done, total: ids.length });
-    }
+      const remainingUnused = (scanResult.images || []).filter(
+        (img) => img.isUnused && !deleted.has(img.id)
+      ).length;
 
-    try {
-      await webflow.getAllAssets?.();
-    } catch {}
+      setScreen(remainingUnused === 0 ? "success" : "results");
 
-    setScanResult((prev) => {
-      if (!prev) return prev;
-      const nextImages = prev.images.filter((img) => !deleted.has(img.id));
-      return {
-        images: nextImages,
-        meta: {
-          ...prev.meta,
-          scannedAssets: Math.max(0, (prev.meta?.scannedAssets || 0) - deleted.size),
-        },
-      };
-    });
-
-    setSelectedIds(new Set());
-
-    const remainingUnused = (scanResult.images || []).filter(
-      (img) => img.isUnused && !deleted.has(img.id)
-    ).length;
-
-    setScreen(remainingUnused === 0 ? "success" : "results");
-
-    if (failed.length > 0) {
-      let msg = `Could not delete ${failed.length} image${failed.length > 1 ? "s" : ""}. They are still listed.`;
-      if (authFailed) {
-        msg += "\n\nAuth issue: Please click Authorize again (or Logout → Authorize), then Refresh, and try deleting again.";
-      } else if (scopeFailed) {
-        msg += "\n\nPermission issue: Your token may not have assets:write scope. Please re-authorize the app in Webflow and grant Assets write access.";
+      if (failed.length > 0) {
+        setError(
+          `Could not delete ${failed.length} image${failed.length > 1 ? "s" : ""}. They are still listed.`
+        );
       }
-      setError(msg);
+    } finally {
+      setDeleting(false);
+      setDeleteProgress(null);
     }
-  } finally {
-    setDeleting(false);
-    setDeleteProgress(null);
-  }
-}, [authGate.siteId, scanResult, selectedIds]);
+  }, [scanResult, selectedIds]);
 
 
 
@@ -795,7 +795,7 @@ export default function App() {
     <button
       onClick={onClick}
       disabled={disabled}
-      className="inline-flex items-center justify-center rounded-xl bg-white text-neutral-950 px-3 py-2 text-xs font-bold hover:opacity-90 disabled:opacity-60"
+      className="inline-flex items-center justify-center rounded-xl bg-brand-red text-brand-cream px-3 py-2 text-xs font-bold hover:bg-brand-wine disabled:opacity-60"
     >
       {children}
     </button>
@@ -807,7 +807,7 @@ export default function App() {
     <button
       onClick={onClick}
       disabled={disabled}
-      className="rounded-xl border border-neutral-800 bg-neutral-900 px-2.5 py-1.5 text-xs font-semibold text-neutral-200 hover:bg-neutral-800 disabled:opacity-50"
+      className="rounded-xl border border-brand-rose/40 bg-white/60 px-2.5 py-1.5 text-xs font-semibold text-brand-wine hover:bg-white disabled:opacity-50"
     >
       {children}
     </button>
@@ -819,7 +819,7 @@ export default function App() {
     <button
       onClick={onClick}
       disabled={disabled}
-      className="rounded-xl bg-red-500/90 text-white px-3 py-2 text-xs font-bold hover:bg-red-500 disabled:opacity-50"
+      className="rounded-xl bg-brand-wine text-brand-cream px-3 py-2 text-xs font-bold hover:opacity-90 disabled:opacity-50"
     >
       {children}
     </button>
@@ -833,23 +833,23 @@ export default function App() {
     const canAuthorize = authGate.status === "needs_auth" || authGate.status === "needs_site";
 
     return (
-      <div className="min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden">
+      <div className="min-h-screen bg-brand-cream text-brand-wine overflow-x-hidden">
         <div className="p-4">
           <div>
-            <h1 className="text-xl font-bold tracking-tight">Bulk Image Cleaner </h1>
-            <p className="mt-1 text-xs text-neutral-400">
+            <h1 className="text-xl font-bold tracking-tight">Bulk Image Cleaner 1</h1>
+            <p className="mt-1 text-xs text-brand-wine/70">
               {authGate.siteName ? `Site: ${authGate.siteName}` : "Open this extension inside Webflow Designer"}
             </p>
           </div>
 
           {authGate.message && (
-            <div className="mt-3 rounded-xl border border-neutral-800 bg-neutral-900/40 px-3 py-2 text-xs text-neutral-200 whitespace-pre-line">
+            <div className="mt-3 rounded-xl border border-brand-rose/40 bg-white/65 px-3 py-2 text-xs text-brand-wine whitespace-pre-line">
               {authGate.message}
             </div>
           )}
 
           {authGate.status === "loading" ? (
-            <div className="mt-4 text-xs text-neutral-400">Checking authorization…</div>
+            <div className="mt-4 text-xs text-brand-wine/70">Checking authorization…</div>
           ) : (
             <div className="mt-4 flex flex-wrap items-center gap-2">
               {canAuthorize && (
@@ -871,17 +871,17 @@ export default function App() {
           )}
 
           {authGate.authorizedSites && authGate.authorizedSites.length > 0 && (
-            <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/30 p-4">
-              <div className="text-xs font-semibold text-neutral-100">Authorized sites</div>
-              <div className="mt-2 space-y-1 text-[11px] text-neutral-400">
+            <div className="mt-4 rounded-2xl border border-brand-rose/40 bg-white/60 p-4">
+              <div className="text-xs font-semibold text-brand-wine">Authorized sites</div>
+              <div className="mt-2 space-y-1 text-[11px] text-brand-wine/70">
                 {authGate.authorizedSites.slice(0, 8).map((s) => (
                   <div key={s.id} className="flex items-center justify-between gap-2">
                     <span className="truncate">{s.displayName || s.shortName || s.id}</span>
-                    <span className="text-neutral-500">{s.id}</span>
+                    <span className="text-brand-wine/50">{s.id}</span>
                   </div>
                 ))}
                 {authGate.authorizedSites.length > 8 && (
-                  <div className="text-neutral-500">
+                  <div className="text-brand-wine/60">
                     +{authGate.authorizedSites.length - 8} more
                   </div>
                 )}
@@ -890,7 +890,7 @@ export default function App() {
           )}
 
           {authGate.status === "api_missing" && (
-            <div className="mt-4 text-[11px] text-neutral-500">
+            <div className="mt-4 text-[11px] text-brand-wine/60">
               Tip: Set API_BASE in frontend/.env (or as window.__API_BASE__) to your backend URL.
             </div>
           )}
@@ -901,31 +901,31 @@ export default function App() {
 
   if (screen === "intro") {
     return (
-      <div className="min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden">
+      <div className="min-h-screen bg-brand-cream text-brand-wine overflow-x-hidden">
         <div className="p-4">
           <div>
             <h1 className="text-xl font-bold tracking-tight">Bulk Image Cleaner</h1>
-            <p className="mt-1 text-xs text-neutral-400">
+            <p className="mt-1 text-xs text-brand-wine/70">
               Clean unused images from your Webflow project in seconds
             </p>
           </div>
 
           {error && (
-            <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+            <div className="mt-3 rounded-xl border border-brand-red/30 bg-brand-rose/20 px-3 py-2 text-xs text-brand-wine">
               {error}
             </div>
           )}
 
-          <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/40 p-4">
-            <div className="text-sm font-semibold text-neutral-100">What it does</div>
-            <ul className="mt-2 space-y-1 text-xs text-neutral-400 list-disc pl-4">
+          <div className="mt-4 rounded-2xl border border-brand-rose/40 bg-white/60 p-4">
+            <div className="text-sm font-semibold text-brand-wine">What it does</div>
+            <ul className="mt-2 space-y-1 text-xs text-brand-wine/75 list-disc pl-4">
               <li>Finds all unused images in your Webflow project</li>
               <li>Shows you which images are safe to delete</li>
               <li>Lets you delete images one by one or all at once</li>
               <li>Helps you search for specific images by name</li>
             </ul>
 
-            <div className="mt-3 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+            <div className="mt-3 rounded-xl border border-brand-red/25 bg-brand-rose/20 px-3 py-2 text-[11px] text-brand-wine">
               Some images used in custom code, embeds, or external scripts might not be detected.
               Check these images manually before deleting.
             </div>
@@ -937,7 +937,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="mt-4 text-[11px] text-neutral-500">
+          <div className="mt-4 text-[11px] text-brand-wine/60">
             OAuth is handled by your backend (/auth). After you authorize in the Webflow dashboard,
             this extension runs directly — no authorize button here.
           </div>
@@ -948,13 +948,13 @@ export default function App() {
 
   if (screen === "scanning") {
     return (
-      <div className="min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden">
+      <div className="min-h-screen bg-brand-cream text-brand-wine overflow-x-hidden">
         <div className="p-4">
           <h1 className="text-xl font-bold tracking-tight">Bulk Image Cleaner</h1>
-          <p className="mt-1 text-xs text-neutral-400">Scanning your project…</p>
+          <p className="mt-1 text-xs text-brand-wine/70">Scanning your project…</p>
 
-          <div className="mt-4 rounded-2xl border border-neutral-800 bg-neutral-900/50 p-4">
-            <div className="flex items-center justify-between text-[11px] text-neutral-300">
+          <div className="mt-4 rounded-2xl border border-brand-rose/40 bg-white/60 p-4">
+            <div className="flex items-center justify-between text-[11px] text-brand-wine/80">
               <span>Scanning…</span>
               <span>{Math.round(scanProgress)}%</span>
             </div>
@@ -963,26 +963,26 @@ export default function App() {
               <ProgressBar value={scanProgress} />
             </div>
 
-            <div className="mt-3 text-xs text-neutral-400">
+            <div className="mt-3 text-xs text-brand-wine/70">
               {scanStep || "Checking pages, elements, background images, and styles…"}
             </div>
 
             <div className="mt-3 grid grid-cols-2 gap-2 text-[11px]">
-              <div className="rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2">
-                <div className="text-neutral-400">Step</div>
-                <div className="mt-0.5 text-neutral-100">Checking pages</div>
+              <div className="rounded-xl border border-brand-rose/40 bg-white/70 px-3 py-2">
+                <div className="text-brand-wine/60">Step</div>
+                <div className="mt-0.5 text-brand-wine font-semibold">Checking pages</div>
               </div>
-              <div className="rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2">
-                <div className="text-neutral-400">Step</div>
-                <div className="mt-0.5 text-neutral-100">Checking elements</div>
+              <div className="rounded-xl border border-brand-rose/40 bg-white/70 px-3 py-2">
+                <div className="text-brand-wine/60">Step</div>
+                <div className="mt-0.5 text-brand-wine font-semibold">Checking elements</div>
               </div>
-              <div className="rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2">
-                <div className="text-neutral-400">Step</div>
-                <div className="mt-0.5 text-neutral-100">Checking background images</div>
+              <div className="rounded-xl border border-brand-rose/40 bg-white/70 px-3 py-2">
+                <div className="text-brand-wine/60">Step</div>
+                <div className="mt-0.5 text-brand-wine font-semibold">Checking background images</div>
               </div>
-              <div className="rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2">
-                <div className="text-neutral-400">Step</div>
-                <div className="mt-0.5 text-neutral-100">Checking image styles</div>
+              <div className="rounded-xl border border-brand-rose/40 bg-white/70 px-3 py-2">
+                <div className="text-brand-wine/60">Step</div>
+                <div className="mt-0.5 text-brand-wine font-semibold">Checking image styles</div>
               </div>
             </div>
           </div>
@@ -990,7 +990,7 @@ export default function App() {
           <div className="mt-4">
             <button
               onClick={reset}
-              className="text-xs text-neutral-400 underline underline-offset-2 hover:text-neutral-200"
+              className="text-xs text-brand-wine/70 underline underline-offset-2 hover:text-brand-wine"
             >
               Cancel & go back
             </button>
@@ -1002,31 +1002,31 @@ export default function App() {
 
   if (screen === "success") {
     return (
-      <div className="min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden">
+      <div className="min-h-screen bg-brand-cream text-brand-wine overflow-x-hidden">
         <div className="p-4">
-          <div className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-5 text-center">
+          <div className="rounded-2xl border border-brand-rose/40 bg-white/60 p-5 text-center">
             <div className="text-xl font-bold">Your Project Is Clean 🎉</div>
-            <div className="mt-2 text-xs text-neutral-400">
+            <div className="mt-2 text-xs text-brand-wine/70">
               No unused images found. All images in your project are currently in use.
             </div>
 
             {scanResult?.meta && (
               <div className="mt-4 grid grid-cols-2 gap-2 text-[11px] text-left">
-                <div className="rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2">
-                  <div className="text-neutral-500">Pages scanned</div>
-                  <div className="mt-0.5 text-neutral-100 font-semibold">{scanResult.meta.scannedPages}</div>
+                <div className="rounded-xl border border-brand-rose/40 bg-white/70 px-3 py-2">
+                  <div className="text-brand-wine/60">Pages scanned</div>
+                  <div className="mt-0.5 text-brand-wine font-semibold">{scanResult.meta.scannedPages}</div>
                 </div>
-                <div className="rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2">
-                  <div className="text-neutral-500">Styles scanned</div>
-                  <div className="mt-0.5 text-neutral-100 font-semibold">{scanResult.meta.scannedStyles}</div>
+                <div className="rounded-xl border border-brand-rose/40 bg-white/70 px-3 py-2">
+                  <div className="text-brand-wine/60">Styles scanned</div>
+                  <div className="mt-0.5 text-brand-wine font-semibold">{scanResult.meta.scannedStyles}</div>
                 </div>
-                <div className="rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2">
-                  <div className="text-neutral-500">Assets checked</div>
-                  <div className="mt-0.5 text-neutral-100 font-semibold">{scanResult.meta.scannedAssets}</div>
+                <div className="rounded-xl border border-brand-rose/40 bg-white/70 px-3 py-2">
+                  <div className="text-brand-wine/60">Assets checked</div>
+                  <div className="mt-0.5 text-brand-wine font-semibold">{scanResult.meta.scannedAssets}</div>
                 </div>
-                <div className="rounded-xl border border-neutral-800 bg-neutral-950 px-3 py-2">
-                  <div className="text-neutral-500">Time</div>
-                  <div className="mt-0.5 text-neutral-100 font-semibold">{scanResult.meta.durationMs}ms</div>
+                <div className="rounded-xl border border-brand-rose/40 bg-white/70 px-3 py-2">
+                  <div className="text-brand-wine/60">Time</div>
+                  <div className="mt-0.5 text-brand-wine font-semibold">{scanResult.meta.durationMs}ms</div>
                 </div>
               </div>
             )}
@@ -1046,7 +1046,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden relative">
+    <div className="min-h-screen bg-brand-cream text-brand-wine overflow-x-hidden relative">
       <ConfirmModal
         state={confirmState}
         onClose={() => setConfirmState((s) => ({ ...s, open: false }))}
@@ -1056,8 +1056,8 @@ export default function App() {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h1 className="text-lg font-bold tracking-tight">See Exactly What’s Unused</h1>
-            <p className="mt-1 text-xs text-neutral-400">
-              Only images marked <span className="text-neutral-200 font-semibold">Unused</span> are shown.
+            <p className="mt-1 text-xs text-brand-wine/70">
+              Only images marked <span className="text-brand-wine font-semibold">Unused</span> are shown.
             </p>
           </div>
 
@@ -1071,7 +1071,7 @@ export default function App() {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search images by name…"
-            className="w-full rounded-2xl bg-neutral-900 border border-neutral-800 px-3 py-2 text-xs outline-none focus:border-neutral-600"
+            className="w-full rounded-2xl bg-white/70 border border-brand-rose/40 px-3 py-2 text-xs outline-none focus:border-brand-red"
           />
         </div>
 
@@ -1082,100 +1082,89 @@ export default function App() {
 
           <div className="flex-1" />
 
-          <div className="text-[11px] text-neutral-400 mr-2">Selected images: {selectedCount}</div>
+          <div className="text-[11px] text-brand-wine/70 mr-2">Selected images: {selectedCount}</div>
           <DangerButton onClick={requestDelete} disabled={deleting || selectedCount === 0}>
             {deleting ? "Deleting…" : "Delete Selected"}
           </DangerButton>
         </div>
 
         {error && (
-          <div className="mt-3 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+          <div className="mt-3 rounded-xl border border-brand-red/30 bg-brand-rose/20 px-3 py-2 text-xs text-brand-wine">
             {error}
           </div>
         )}
 
-       <div className="mt-3 rounded-2xl border border-neutral-800 overflow-hidden">
-  {/* Sticky header (scroll karte time bhi upar rahega) */}
-  <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[10px] uppercase tracking-wide text-neutral-400 bg-neutral-900/60 sticky top-0 z-10">
-    <div className="col-span-1"> </div>
-    <div className="col-span-5">Image Name</div>
-    <div className="col-span-4">Image ID</div>
-    <div className="col-span-2 text-right">Status</div>
-  </div>
-
-  {/* ✅ Scrollable body */}
-  <div className="max-h-[60vh] overflow-y-auto">
-    {unusedImages.length === 0 ? (
-      <div className="px-3 py-10 text-center">
-        <div className="text-sm text-neutral-200">
-          {query.trim() ? "No unused images match your search." : "No unused images found"}
-        </div>
-        {!query.trim() && (
-          <div className="mt-1 text-xs text-neutral-400">
-            Your project is already clean. All images are currently in use.
+        <div className="mt-3 rounded-2xl border border-brand-rose/40 overflow-hidden bg-white/60">
+          <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[10px] uppercase tracking-wide text-brand-wine/70 bg-white/60">
+            <div className="col-span-1"> </div>
+            <div className="col-span-5">Image Name</div>
+            <div className="col-span-4">Image ID</div>
+            <div className="col-span-2 text-right">Status</div>
           </div>
-        )}
-        <div className="mt-4 flex justify-center">
-          <GhostButton onClick={() => setScreen("success")}>View Clean State</GhostButton>
-        </div>
-      </div>
-    ) : (
-      <div className="divide-y divide-neutral-800">
-        {unusedImages.map((img) => {
-          const checked = selectedIds.has(img.id);
-          return (
-            <div
-              key={img.id}
-              className="grid grid-cols-12 gap-2 px-3 py-2 items-center hover:bg-neutral-900/40"
-            >
-              <div className="col-span-1">
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => toggle(img.id)}
-                  className="accent-white"
-                />
-              </div>
 
-              <div className="col-span-5 min-w-0">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="h-8 w-10 rounded-md overflow-hidden bg-neutral-900 border border-neutral-800 shrink-0">
-                    {img.url ? (
-                      <img
-                        src={img.url}
-                        alt={img.name}
-                        className="h-full w-full object-cover"
-                        loading="lazy"
-                      />
-                    ) : null}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-xs font-semibold text-neutral-100 truncate">{img.name}</div>
-                    <div className="text-[10px] text-neutral-500 truncate">
-                      {img.mimeType || "image"}
-                    </div>
-                  </div>
+          {unusedImages.length === 0 ? (
+            <div className="px-3 py-10 text-center">
+              <div className="text-sm text-brand-wine font-semibold">
+                {query.trim() ? "No unused images match your search." : "No unused images found"}
+              </div>
+              {!query.trim() && (
+                <div className="mt-1 text-xs text-brand-wine/70">
+                  Your project is already clean. All images are currently in use.
                 </div>
-              </div>
-
-              <div className="col-span-4 min-w-0">
-                <div className="text-[11px] text-neutral-300 truncate">{img.id}</div>
-              </div>
-
-              <div className="col-span-2 text-right">
-                <Pill>Unused</Pill>
+              )}
+              <div className="mt-4 flex justify-center">
+                <GhostButton onClick={() => setScreen("success")}>View Clean State</GhostButton>
               </div>
             </div>
-          );
-        })}
-      </div>
-    )}
-  </div>
-</div>
+          ) : (
+            <div className="max-h-[55vh] overflow-y-auto overflow-x-hidden divide-y divide-brand-rose/30">
+              {unusedImages.map((img) => {
+                const checked = selectedIds.has(img.id);
+                return (
+                  <div
+                    key={img.id}
+                    className="grid grid-cols-12 gap-2 px-3 py-2 items-center hover:bg-white/70"
+                  >
+                    <div className="col-span-1">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggle(img.id)}
+                        className="accent-brand-red"
+                      />
+                    </div>
+
+                    <div className="col-span-5 min-w-0">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="h-8 w-10 rounded-md overflow-hidden bg-white/80 border border-brand-rose/40 shrink-0">
+                          {img.url ? (
+                            <img src={img.url} alt={img.name} className="h-full w-full object-cover" />
+                          ) : null}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-xs font-semibold text-brand-wine truncate">{img.name}</div>
+                          <div className="text-[10px] text-brand-wine/60 truncate">{img.mimeType || "image"}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="col-span-4 min-w-0">
+                      <div className="text-[11px] text-brand-wine/80 truncate">{img.id}</div>
+                    </div>
+
+                    <div className="col-span-2 text-right">
+                      <Pill>Unused</Pill>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
         {deleteProgress && (
-          <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-900/50 p-3">
-            <div className="flex items-center justify-between text-[11px] text-neutral-400">
+          <div className="mt-3 rounded-2xl border border-brand-rose/40 bg-white/60 p-3">
+            <div className="flex items-center justify-between text-[11px] text-brand-wine/70">
               <span>Deletion progress</span>
               <span>
                 {deleteProgress.done}/{deleteProgress.total}
@@ -1193,7 +1182,7 @@ export default function App() {
           </div>
         )}
 
-        <div className="mt-3 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+        <div className="mt-3 rounded-xl border border-brand-red/25 bg-brand-rose/20 px-3 py-2 text-[11px] text-brand-wine">
           Important: Images referenced in custom code, embeds, or external scripts might not be detected.
           Please verify before deleting.
         </div>
@@ -1201,13 +1190,13 @@ export default function App() {
         <div className="mt-4 flex items-center justify-between">
           <button
             onClick={reset}
-            className="text-xs text-neutral-400 underline underline-offset-2 hover:text-neutral-200"
+            className="text-xs text-brand-wine/70 underline underline-offset-2 hover:text-brand-wine"
           >
             Back to start
           </button>
 
           {scanResult?.meta ? (
-            <div className="text-[11px] text-neutral-500">
+            <div className="text-[11px] text-brand-wine/60">
               Scanned {scanResult.meta.scannedPages} pages · {scanResult.meta.scannedAssets} assets · {scanResult.meta.durationMs}ms
             </div>
           ) : null}

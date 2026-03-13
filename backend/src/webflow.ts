@@ -19,6 +19,7 @@ export function isWebflowError(e: any): e is WebflowError {
 }
 
 const API = "https://api.webflow.com/v2";
+const BETA = "https://api.webflow.com/beta";
 
 function normalizeScopes(raw: string) {
   return raw
@@ -109,20 +110,41 @@ async function wf<T>(accessToken: string, path: string, init: RequestInit = {}):
   return { data };
 }
 
+async function wfBeta<T>(accessToken: string, path: string, init: RequestInit = {}): Promise<{ data: T }> {
+  const res = await fetch(`${BETA}${path}`, {
+    ...init,
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${accessToken}`,
+      ...(init.headers || {}),
+    },
+  });
+
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : undefined;
+
+  if (!res.ok) {
+    throw new WebflowError(res.status, data?.message || "Webflow API error", data, res.headers);
+  }
+  return { data };
+}
+
 export const webflowApi = {
   token: {
     authorizedBy: (token: string) => wf<any>(token, "/token/authorized_by"),
     introspect: (token: string) => wf<any>(token, "/token/introspect"),
+    resolveIdToken: (token: string, idToken: string) =>
+      wfBeta<any>(token, "/token/resolve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken }),
+      }),
   },
   sites: {
     list: (token: string) => wf<any>(token, "/sites"),
   },
   assets: {
-    // Webflow Data API v2: DELETE /v2/assets/:asset_id
-    // Required scope: assets:write
-    delete: (token: string, assetId: string) =>
-      wf<void>(token, `/assets/${encodeURIComponent(assetId)}`, {
-        method: "DELETE",
-      }),
+    list: (token: string) => wf<any>(token, "/assets"),
+    remove: (token: string, assetId: string) => wf<any>(token, `/assets/${assetId}`, { method: "DELETE" }),
   },
 };
