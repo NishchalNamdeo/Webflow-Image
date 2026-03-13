@@ -31,7 +31,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const base = getApiBase();
   if (!base) throw new ApiError(0, "API_BASE is not configured");
 
-  const res = await fetch(`${base}${path}` , {
+  const res = await fetch(`${base}${path}`, {
     credentials: "include",
     headers: {
       Accept: "application/json",
@@ -41,8 +41,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!res.ok) {
-    const msg = await res.text().catch(() => "");
-    throw new ApiError(res.status, msg || res.statusText);
+    const text = await res.text().catch(() => "");
+    let msg = text || res.statusText;
+    try {
+      const j = text ? JSON.parse(text) : null;
+      if (j && typeof j === "object" && typeof (j as any).message === "string") {
+        msg = (j as any).message;
+      }
+    } catch {}
+    throw new ApiError(res.status, msg);
   }
 
   if (res.status === 204) return {} as T;
@@ -62,13 +69,12 @@ export type SiteInfoSummary = {
 };
 
 export type SiteListResponse = { sites: SiteInfoSummary[] };
+export type DeleteAssetResponse = {};
 
 export const api = {
-  // siteId passed here allows backend to auto-hydrate authorization across browsers
-  authStatus: async (siteId?: string): Promise<AuthStatus | null> => {
+  authStatus: async (): Promise<AuthStatus | null> => {
     try {
-      const q = siteId ? `?siteId=${encodeURIComponent(String(siteId))}` : "";
-      return await request<AuthStatus>(`/api/auth/status${q}`);
+      return await request<AuthStatus>("/api/auth/status");
     } catch {
       return null;
     }
@@ -80,5 +86,13 @@ export const api = {
 
   logout: async (): Promise<void> => {
     await request("/api/logout", { method: "POST" });
+  },
+
+  deleteAsset: async (siteId: string, assetId: string): Promise<DeleteAssetResponse> => {
+    const sid = encodeURIComponent(String(siteId || "").trim());
+    const aid = encodeURIComponent(String(assetId || "").trim());
+    return await request<DeleteAssetResponse>(`/api/sites/${sid}/assets/${aid}`, {
+      method: "DELETE",
+    });
   },
 };

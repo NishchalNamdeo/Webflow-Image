@@ -12,8 +12,6 @@ import {
   isWebflowError,
   WebflowError,
 } from "./webflow.js";
-import { getStoredSiteAuth, touchStoredSiteAuth, upsertStoredSiteAuth } from "./persistentAuth.js";
-
 
 const asyncRoute =
   (
@@ -215,6 +213,13 @@ function requireAuth(req: Request, res: Response, next: NextFunction)  {
   next();
 }
 
+function getAccessTokenForSite(req: Request, siteId: string): string {
+  const map = ensureAuthorizedSites(req);
+  const entry = map[String(siteId || "").trim()];
+  const token = String(entry?.accessToken || req.session?.accessToken || "").trim();
+  return token;
+}
+
 type AuthorizedSite = {
   siteId: string;
   siteName?: string;
@@ -341,21 +346,6 @@ app.get(
       });
     }
 
-    // Persist auth per-site so switching browsers (Chrome/Safari) doesn't require re-authorize again.
-    await Promise.all(
-      siteIds.map((siteId) =>
-        upsertStoredSiteAuth({
-          siteId: String(siteId),
-          siteName: idToName[siteId],
-          accessToken: token.accessToken,
-          scopes: token.scope,
-          firstSeenAt: now,
-          lastSeenAt: now,
-        })
-      )
-    );
-
-
     await new Promise<void>((resolve, reject) =>
       req.session.save((err) => (err ? reject(err) : resolve()))
     );
@@ -367,48 +357,14 @@ app.get(
 // -----------------------------
 // Minimal API (optional)
 // -----------------------------
-app.get(
-  "/api/auth/status",
-  asyncRoute(async (req: Request, res: Response) => {
-    const siteHint = String((req.query as any)?.siteId || "").trim();
-
-    let authenticated = hasAnyAuthorization(req);
-
-    // If this browser session is not authorized, but we already have a stored token for this site,
-    // auto-hydrate the session (so switching browsers doesn't require re-authorize again).
-    if (!authenticated && siteHint) {
-      const stored = await getStoredSiteAuth(siteHint);
-      if (stored?.accessToken) {
-        const now = Date.now();
-        upsertAuthorizedSite(req, siteHint, {
-          accessToken: stored.accessToken,
-          scopes: stored.scopes,
-          siteName: stored.siteName,
-          lastSeenAt: now,
-        });
-
-        (req.session as any).accessToken = stored.accessToken;
-        (req.session as any).scopes = stored.scopes;
-
-        await new Promise<void>((resolve) => req.session.save(() => resolve()));
-        authenticated = true;
-
-        // update lastSeenAt in store
-        await touchStoredSiteAuth(siteHint);
-      }
-    }
-
-    const s: any = req.session as any;
-    const map =
-      s && s.authorizedSites && typeof s.authorizedSites === "object" ? s.authorizedSites : {};
-
-    res.json({
-      authenticated,
-      authorizedSitesCount: Object.keys(map).length,
-      siteIds: Object.keys(map),
-    });
-  })
-);
+app.get("/api/auth/status", (req: Request, res: Response) => {
+  const map = ensureAuthorizedSites(req);
+  res.json({
+    authenticated: hasAnyAuthorization(req),
+    authorizedSitesCount: Object.keys(map).length,
+    siteIds: Object.keys(map),
+  });
+});
 
 app.get(
   "/api/me",
@@ -434,6 +390,32 @@ app.get("/api/sites", requireAuth, (req: Request, res: Response) => {
     );
   res.json({ sites });
 });
+
+// Delete an asset (image) from Webflow so it disappears from the Assets panel too.
+// Frontend sends the current Designer siteId so we can validate authorization.
+app.delete(
+  "/api/sites/:siteId/assets/:assetId",
+  requireAuth,
+  asyncRoute(async (req: Request, res: Response) => {
+    const siteId = String(req.params.siteId || "").trim();
+    const assetId = String(req.params.assetId || "").trim();
+
+    if (!siteId || !assetId) {
+      return res.status(400).json({ message: "Missing siteId or assetId" });
+    }
+
+    const authorizedSites = ensureAuthorizedSites(req);
+    if (!authorizedSites[siteId]) {
+      return res.status(403).json({ message: "Site is not authorized for this session" });
+    }
+
+    const token = getAccessTokenForSite(req, siteId);
+    if (!token) return res.status(401).json({ message: "Not authenticated" });
+
+    await webflowApi.assets.delete(token, assetId);
+    return res.status(204).send();
+  })
+);
 
 app.post("/api/logout", (req: Request, res: Response) => {
   req.session.destroy(() => {

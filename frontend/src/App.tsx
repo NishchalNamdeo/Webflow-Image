@@ -148,57 +148,6 @@ const ConfirmModal: React.FC<{
   );
 };
 
-
-const NoticeModal: React.FC<{
-  open: boolean;
-  title: string;
-  body?: string;
-  okText?: string;
-  onOk: () => void;
-}> = ({ open, title, body, okText = "OK", onOk }) => {
-  if (!open) return null;
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/50" onClick={onOk}>
-      <div className="p-4" onClick={(e) => e.stopPropagation()}>
-        <div className="rounded-2xl border border-neutral-800 bg-neutral-950 shadow-xl p-4">
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-200">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M12 9v4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                <path d="M12 17h.01" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-                <path
-                  d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </div>
-
-            <div className="min-w-0 flex-1">
-              <div className="text-sm font-semibold text-neutral-100">{title}</div>
-              {body ? (
-                <div className="mt-1 whitespace-pre-line text-xs text-neutral-400 leading-relaxed">{body}</div>
-              ) : null}
-
-              <div className="mt-4">
-                <button
-                  onClick={onOk}
-                  className="w-full rounded-xl bg-white text-neutral-950 px-3 py-2 text-xs font-bold hover:opacity-90"
-                >
-                  {okText}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-
 const ProgressBar: React.FC<{ value: number }> = ({ value }) => {
   const v = Math.max(0, Math.min(100, Math.round(value)));
   return (
@@ -253,7 +202,7 @@ export default function App() {
       return;
     }
 
-    const auth = await api.authStatus(siteId || undefined);
+    const auth = await api.authStatus();
     if (!auth || !auth.authenticated) {
       setAuthGate({
         status: "needs_auth",
@@ -355,8 +304,6 @@ export default function App() {
 
   const [confirmState, setConfirmState] = useState<ConfirmState>({ open: false, title: "" });
 
-  const [refreshNoticeOpen, setRefreshNoticeOpen] = useState(false);
-
   const scanTickRef = useRef<number | null>(null);
 
   const clearScanTick = useCallback(() => {
@@ -391,20 +338,10 @@ export default function App() {
 
     // UI tick
     scanTickRef.current = window.setInterval(() => {
-      setScanProgress((p) => {
-        // Keep UI moving while we do real work, but never hit 100% before the scan truly finishes.
-        const cap = 99;
-        if (p >= cap) return cap;
+      setScanProgress((p) => (p >= 92 ? p : p + 1));
+    }, 180);
 
-        // Move faster early, slower near the end (feels smoother).
-        const step = p < 90 ? 1 : 0.4;
-        return Math.min(cap, p + step);
-      });
-    }, 220);
-
-    // Start with a tiny visible progress so it doesn't feel stuck at 0.
-    setScanProgress((p) => (p < 1 ? 1 : p));
-const started = performance.now();
+    const started = performance.now();
 
     try {
       try {
@@ -622,10 +559,9 @@ const started = performance.now();
       }
 
       clearScanTick();
-      const ended = performance.now();
       updateProgress(100);
-      // Give React a moment to paint 100% before we switch screens
-      await new Promise((r) => setTimeout(r, 180));
+
+      const ended = performance.now();
 
       const rows: ImageRow[] = images.map((img) => ({
         id: img.id,
@@ -716,86 +652,125 @@ const started = performance.now();
 
 
   const performDelete = useCallback(async () => {
-    if (!scanResult) return;
-    const ids = Array.from(selectedIds);
-    if (ids.length === 0) return;
+  if (!scanResult) return;
+  const ids = Array.from(selectedIds);
+  if (ids.length === 0) return;
 
-    setDeleting(true);
-    setDeleteProgress({ done: 0, total: ids.length });
-    setError(null);
+  setDeleting(true);
+  setDeleteProgress({ done: 0, total: ids.length });
+  setError(null);
 
-    const deleted = new Set<string>();
-    const failed: string[] = [];
+  const siteId = String(authGate.siteId || "").trim();
+
+  const deleted = new Set<string>();
+  const failed: string[] = [];
+
+  let authFailed = false;
+  let scopeFailed = false;
+
+  const tryRemoveFromDesigner = async (assetMaybe: any, assetId: string): Promise<boolean> => {
+    let asset = assetMaybe;
+
+    if (!asset && typeof webflow.getAssetById === "function") {
+      try {
+        asset = await webflow.getAssetById(assetId);
+      } catch {
+        asset = null;
+      }
+    }
+
+    if (!asset) return true;
 
     try {
-      const assets = await webflow.getAllAssets?.();
-      const list: any[] = Array.isArray(assets) ? assets : [];
-      const byId = new Map<string, any>(list.map((a: any) => [String(a.id), a]));
+      if (typeof asset.remove === "function") {
+        await asset.remove();
+        return true;
+      }
+    } catch {}
 
-      let done = 0;
-      for (const id of ids) {
-        const asset = byId.get(id);
+    try {
+      if (typeof webflow.removeAsset === "function") {
+        await webflow.removeAsset(asset);
+        return true;
+      }
+    } catch {}
 
-        let ok = false;
+    return false;
+  };
 
-        // If the asset is already missing from the Asset panel, treat as deleted.
-        if (!asset) {
+  try {
+    const assets = await webflow.getAllAssets?.().catch(() => []);
+    const list: any[] = Array.isArray(assets) ? assets : [];
+    const byId = new Map<string, any>(list.map((a: any) => [String(a.id), a]));
+
+    let done = 0;
+    for (const id of ids) {
+      const assetObj = byId.get(id);
+      let ok = false;
+
+      // 1) Primary: backend OAuth delete (removes from Webflow Assets too)
+      if (siteId) {
+        try {
+          await api.deleteAsset(siteId, id);
           ok = true;
-        } else {
-          try {
-            if (typeof asset.remove === "function") {
-              await asset.remove();
-              ok = true;
-            } else if (typeof webflow.removeAsset === "function") {
-              await webflow.removeAsset(asset);
-              ok = true;
-            }
-          } catch {
-            ok = false;
-          }
+        } catch (e: any) {
+          const status = Number(e?.status || 0);
+          const msg = String(e?.message || "").toLowerCase();
+          if (status === 401) authFailed = true;
+          if (status === 403 || msg.includes("scope") || msg.includes("assets:write")) scopeFailed = true;
+          ok = false;
         }
-
-        if (ok) deleted.add(id);
-        else failed.push(id);
-
-        done++;
-        setDeleteProgress({ done, total: ids.length });
       }
 
-      // IMPORTANT: Do NOT rescan automatically. Just remove the deleted assets from the current list.
-      setScanResult((prev) => {
-        if (!prev) return prev;
-        const nextImages = prev.images.filter((img) => !deleted.has(img.id));
-        return {
-          images: nextImages,
-          meta: {
-            ...prev.meta,
-            scannedAssets: Math.max(0, (prev.meta?.scannedAssets || 0) - deleted.size),
-          },
-        };
-      });
+      // 2) Best-effort: instantly update Assets panel UI in Designer
+      const designerOk = await tryRemoveFromDesigner(assetObj, id);
+      ok = ok || designerOk;
 
-      setSelectedIds(new Set());
+      if (ok) deleted.add(id);
+      else failed.push(id);
 
-      const remainingUnused = (scanResult.images || []).filter(
-        (img) => img.isUnused && !deleted.has(img.id)
-      ).length;
-
-      setScreen(remainingUnused === 0 ? "success" : "results");
-
-      // Note: Webflow Assets panel can be cached. Show a quick popup asking for refresh.
-      if (deleted.size > 0) setRefreshNoticeOpen(true);
-
-      if (failed.length > 0) {
-        setError(
-          `Could not delete ${failed.length} image${failed.length > 1 ? "s" : ""}. They are still listed.`
-        );
-      }
-    } finally {
-      setDeleting(false);
-      setDeleteProgress(null);
+      done++;
+      setDeleteProgress({ done, total: ids.length });
     }
-  }, [scanResult, selectedIds]);
+
+    try {
+      await webflow.getAllAssets?.();
+    } catch {}
+
+    setScanResult((prev) => {
+      if (!prev) return prev;
+      const nextImages = prev.images.filter((img) => !deleted.has(img.id));
+      return {
+        images: nextImages,
+        meta: {
+          ...prev.meta,
+          scannedAssets: Math.max(0, (prev.meta?.scannedAssets || 0) - deleted.size),
+        },
+      };
+    });
+
+    setSelectedIds(new Set());
+
+    const remainingUnused = (scanResult.images || []).filter(
+      (img) => img.isUnused && !deleted.has(img.id)
+    ).length;
+
+    setScreen(remainingUnused === 0 ? "success" : "results");
+
+    if (failed.length > 0) {
+      let msg = `Could not delete ${failed.length} image${failed.length > 1 ? "s" : ""}. They are still listed.`;
+      if (authFailed) {
+        msg += "\n\nAuth issue: Please click Authorize again (or Logout → Authorize), then Refresh, and try deleting again.";
+      } else if (scopeFailed) {
+        msg += "\n\nPermission issue: Your token may not have assets:write scope. Please re-authorize the app in Webflow and grant Assets write access.";
+      }
+      setError(msg);
+    }
+  } finally {
+    setDeleting(false);
+    setDeleteProgress(null);
+  }
+}, [authGate.siteId, scanResult, selectedIds]);
 
 
 
@@ -861,7 +836,7 @@ const started = performance.now();
       <div className="min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden">
         <div className="p-4">
           <div>
-            <h1 className="text-xl font-bold tracking-tight">Bulk Image Cleaner</h1>
+            <h1 className="text-xl font-bold tracking-tight">Bulk Image Cleaner </h1>
             <p className="mt-1 text-xs text-neutral-400">
               {authGate.siteName ? `Site: ${authGate.siteName}` : "Open this extension inside Webflow Designer"}
             </p>
@@ -1028,18 +1003,7 @@ const started = performance.now();
   if (screen === "success") {
     return (
       <div className="min-h-screen bg-neutral-950 text-neutral-100 overflow-x-hidden">
-        
-        <NoticeModal
-          open={refreshNoticeOpen}
-          title="Refresh Webflow to see full updates"
-          body={
-            "Images are deleted from your project, but Webflow’s Assets panel may still show cached data.\n\nPlease refresh the Designer tab/site to see the latest Assets panel state."
-          }
-          okText="Okay"
-          onOk={() => setRefreshNoticeOpen(false)}
-        />
-
-<div className="p-4">
+        <div className="p-4">
           <div className="rounded-2xl border border-neutral-800 bg-neutral-900/40 p-5 text-center">
             <div className="text-xl font-bold">Your Project Is Clean 🎉</div>
             <div className="mt-2 text-xs text-neutral-400">
@@ -1088,16 +1052,6 @@ const started = performance.now();
         onClose={() => setConfirmState((s) => ({ ...s, open: false }))}
       />
 
-      <NoticeModal
-        open={refreshNoticeOpen}
-        title="Refresh Webflow to see full updates"
-        body={
-          "Images are deleted from your project, but Webflow’s Assets panel may still show cached data.\n\nPlease refresh the Designer tab/site to see the latest Assets panel state."
-        }
-        okText="Okay"
-        onOk={() => setRefreshNoticeOpen(false)}
-      />
-
       <div className="p-4">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
@@ -1140,73 +1094,84 @@ const started = performance.now();
           </div>
         )}
 
-        <div className="mt-3 rounded-2xl border border-neutral-800 overflow-hidden">
-          <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[10px] uppercase tracking-wide text-neutral-400 bg-neutral-900/60">
-            <div className="col-span-1"> </div>
-            <div className="col-span-5">Image Name</div>
-            <div className="col-span-4">Image ID</div>
-            <div className="col-span-2 text-right">Status</div>
+       <div className="mt-3 rounded-2xl border border-neutral-800 overflow-hidden">
+  {/* Sticky header (scroll karte time bhi upar rahega) */}
+  <div className="grid grid-cols-12 gap-2 px-3 py-2 text-[10px] uppercase tracking-wide text-neutral-400 bg-neutral-900/60 sticky top-0 z-10">
+    <div className="col-span-1"> </div>
+    <div className="col-span-5">Image Name</div>
+    <div className="col-span-4">Image ID</div>
+    <div className="col-span-2 text-right">Status</div>
+  </div>
+
+  {/* ✅ Scrollable body */}
+  <div className="max-h-[60vh] overflow-y-auto">
+    {unusedImages.length === 0 ? (
+      <div className="px-3 py-10 text-center">
+        <div className="text-sm text-neutral-200">
+          {query.trim() ? "No unused images match your search." : "No unused images found"}
+        </div>
+        {!query.trim() && (
+          <div className="mt-1 text-xs text-neutral-400">
+            Your project is already clean. All images are currently in use.
           </div>
+        )}
+        <div className="mt-4 flex justify-center">
+          <GhostButton onClick={() => setScreen("success")}>View Clean State</GhostButton>
+        </div>
+      </div>
+    ) : (
+      <div className="divide-y divide-neutral-800">
+        {unusedImages.map((img) => {
+          const checked = selectedIds.has(img.id);
+          return (
+            <div
+              key={img.id}
+              className="grid grid-cols-12 gap-2 px-3 py-2 items-center hover:bg-neutral-900/40"
+            >
+              <div className="col-span-1">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggle(img.id)}
+                  className="accent-white"
+                />
+              </div>
 
-          {unusedImages.length === 0 ? (
-            <div className="px-3 py-10 text-center">
-              <div className="text-sm text-neutral-200">
-                {query.trim() ? "No unused images match your search." : "No unused images found"}
-              </div>
-              {!query.trim() && (
-                <div className="mt-1 text-xs text-neutral-400">
-                  Your project is already clean. All images are currently in use.
-                </div>
-              )}
-              <div className="mt-4 flex justify-center">
-                <GhostButton onClick={() => setScreen("success")}>View Clean State</GhostButton>
-              </div>
-            </div>
-          ) : (
-            <div className="divide-y divide-neutral-800">
-              {unusedImages.map((img) => {
-                const checked = selectedIds.has(img.id);
-                return (
-                  <div
-                    key={img.id}
-                    className="grid grid-cols-12 gap-2 px-3 py-2 items-center hover:bg-neutral-900/40"
-                  >
-                    <div className="col-span-1">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggle(img.id)}
-                        className="accent-white"
+              <div className="col-span-5 min-w-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="h-8 w-10 rounded-md overflow-hidden bg-neutral-900 border border-neutral-800 shrink-0">
+                    {img.url ? (
+                      <img
+                        src={img.url}
+                        alt={img.name}
+                        className="h-full w-full object-cover"
+                        loading="lazy"
                       />
-                    </div>
-
-                    <div className="col-span-5 min-w-0">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="h-8 w-10 rounded-md overflow-hidden bg-neutral-900 border border-neutral-800 shrink-0">
-                          {img.url ? (
-                            <img src={img.url} alt={img.name} className="h-full w-full object-cover" />
-                          ) : null}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-xs font-semibold text-neutral-100 truncate">{img.name}</div>
-                          <div className="text-[10px] text-neutral-500 truncate">{img.mimeType || "image"}</div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="col-span-4 min-w-0">
-                      <div className="text-[11px] text-neutral-300 truncate">{img.id}</div>
-                    </div>
-
-                    <div className="col-span-2 text-right">
-                      <Pill>Unused</Pill>
+                    ) : null}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold text-neutral-100 truncate">{img.name}</div>
+                    <div className="text-[10px] text-neutral-500 truncate">
+                      {img.mimeType || "image"}
                     </div>
                   </div>
-                );
-              })}
+                </div>
+              </div>
+
+              <div className="col-span-4 min-w-0">
+                <div className="text-[11px] text-neutral-300 truncate">{img.id}</div>
+              </div>
+
+              <div className="col-span-2 text-right">
+                <Pill>Unused</Pill>
+              </div>
             </div>
-          )}
-        </div>
+          );
+        })}
+      </div>
+    )}
+  </div>
+</div>
 
         {deleteProgress && (
           <div className="mt-3 rounded-2xl border border-neutral-800 bg-neutral-900/50 p-3">
