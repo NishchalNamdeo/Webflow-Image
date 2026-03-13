@@ -361,6 +361,7 @@ export default function App() {
   const [infoState, setInfoState] = useState<ConfirmState>({ open: false, title: "" });
 
   const scanTickRef = useRef<number | null>(null);
+  const scanTargetRef = useRef<number>(0);
 
   const clearScanTick = useCallback(() => {
     if (scanTickRef.current !== null) {
@@ -379,9 +380,11 @@ export default function App() {
     setScreen("intro");
   }, []);
 
-  const updateProgress = useCallback((v: number) => {
-    setScanProgress((prev) => Math.max(prev, Math.min(100, v)));
-  }, []);
+ 
+const updateProgress = useCallback((v: number) => {
+  const next = Math.max(0, Math.min(98, Math.round(v))); 
+  scanTargetRef.current = Math.max(scanTargetRef.current, next);
+}, []);
 
   const runScan = useCallback(async () => {
     clearScanTick();
@@ -392,21 +395,31 @@ export default function App() {
     setScreen("scanning");
     setScanProgress(0);
 
-    // UI tick
-    scanTickRef.current = window.setInterval(() => {
-      // Smooth progress (never "stuck" at 92). Cap at 99 until scan finishes.
-      setScanProgress((p) => {
-        const cur = Number(p) || 0;
-        if (cur >= 99) return cur;
+   // UI tick: ease current progress toward a target (scanTargetRef)
+scanTargetRef.current = 0;
+scanTickRef.current = window.setInterval(() => {
+  setScanProgress((p) => {
+    const cur = Number(p) || 0;
+    const targetRaw = Number(scanTargetRef.current) || 0;
 
-        // Speed curve: fast early, slower near the end.
-        const step = cur < 70 ? 1.2 : cur < 88 ? 0.8 : cur < 95 ? 0.4 : 0.2;
-        const next = cur + step;
-        return Math.min(99, next);
-      });
-    }, 160);
+    // During scan we cap at 98. When scan finishes we set target to 100.
+    const hardCap = targetRaw >= 100 ? 100 : 98;
+    const target = Math.min(targetRaw, hardCap);
 
-    const started = performance.now();
+    // Tiny "creep" so it doesn't look frozen, but never run too far ahead of real progress.
+    const creepCap = Math.min(hardCap, target + 3);
+
+    const goal = cur < target ? target : creepCap;
+    if (cur >= goal) return cur;
+
+    const delta = goal - cur;
+    // important: last 2% ko bhi quickly complete kare, 99 pe stuck feel na ho
+    const step = delta > 12 ? 1.4 : delta > 6 ? 0.9 : delta > 2 ? 0.55 : 0.5;
+    return Math.min(goal, cur + step);
+  });
+}, 140);
+
+const started = performance.now();
 
     try {
       try {
@@ -623,10 +636,13 @@ export default function App() {
         }
       }
 
-      clearScanTick();
-      updateProgress(100);
-      // Let the UI show 100% briefly before rendering results.
-      await new Promise((r) => setTimeout(r, 180));
+      // Smoothly finish 98% -> 100%, then show results exactly at 100%.
+     setScanStep("Preparing results…");
+     scanTargetRef.current = 100;
+    await new Promise((r) => setTimeout(r, 650));
+    clearScanTick();
+    setScanProgress(100);
+    await new Promise((r) => setTimeout(r, 80));
 
       const ended = performance.now();
 
@@ -1154,9 +1170,7 @@ export default function App() {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h1 className="text-lg font-bold tracking-tight">See Exactly What’s Unused</h1>
-            <p className="mt-1 text-xs text-neutral-400">
-              Only images marked <span className="text-neutral-200 font-semibold">Unused</span> are shown.
-            </p>
+            
           </div>
 
           <GhostButton onClick={runScan} disabled={deleting}>
